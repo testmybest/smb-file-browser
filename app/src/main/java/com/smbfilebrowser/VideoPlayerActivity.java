@@ -16,20 +16,22 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.FileDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.ui.PlayerView;
 
 import java.io.File;
 import java.util.Locale;
 
 /**
- * 视频/音频播放器页面 - 支持流式播放
+ * 视频/音频播放器页面 - 真正的流式播放
  *
- * 工作流程：
- * 1. 接收 SMB 文件路径
- * 2. 后台开始流式下载到缓存
- * 3. 缓冲足够数据后（~2MB）开始播放
- * 4. 后台继续下载，播放器读取不断增长的本地文件
+ * 工作原理：
+ * 1. 立即开始下载到缓存文件
+ * 2. 下载 256KB 后立即开始播放（足够解码器读取文件头）
+ * 3. 播放器读取不断增长的本地文件
+ * 4. 如果播放追上下载，ExoPlayer 会自动缓冲等待
  */
 public class VideoPlayerActivity extends AppCompatActivity {
 
@@ -75,23 +77,23 @@ public class VideoPlayerActivity extends AppCompatActivity {
             return;
         }
 
-        // 开始流式下载
-        startStreaming();
+        // 开始真正的流式播放
+        startStreamingPlayback();
     }
 
     /**
-     * 开始流式下载并播放
+     * 真正的流式播放 — 下载一点就立即开始播放
      */
-    private void startStreaming() {
+    private void startStreamingPlayback() {
         loadingOverlay.setVisibility(View.VISIBLE);
-        tvLoadingStatus.setText("正在缓冲...");
+        tvLoadingStatus.setText("正在连接...");
 
         smbManager.streamFile(remoteFilePath, this, new SMBManager.StreamListener() {
             @Override
             public void onReady(String localPath, long totalSize) {
                 localCachePath = localPath;
-                // 在主线程开始播放
-                handler.post(() -> startPlayback(localPath));
+                // 已经缓冲了足够数据，立即开始播放
+                handler.post(() -> startPlayback(localPath, totalSize));
             }
 
             @Override
@@ -130,10 +132,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
     }
 
     /**
-     * 开始播放本地缓存文件
+     * 开始播放 — 使用 FileDataSource 支持读取不断增长的文件
      */
     @OptIn(markerClass = UnstableApi.class)
-    private void startPlayback(String localPath) {
+    private void startPlayback(String localPath, long totalSize) {
         try {
             File file = new File(localPath);
             if (!file.exists()) {
@@ -144,9 +146,16 @@ public class VideoPlayerActivity extends AppCompatActivity {
             player = new ExoPlayer.Builder(this).build();
             playerView.setPlayer(player);
 
+            // 使用 FileDataSource 支持读取不断增长的文件
+            FileDataSource.Factory dataSourceFactory = new FileDataSource.Factory();
+            
             Uri uri = Uri.fromFile(file);
             MediaItem mediaItem = MediaItem.fromUri(uri);
-            player.setMediaItem(mediaItem);
+            
+            ProgressiveMediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
+                    .createMediaSource(mediaItem);
+            
+            player.setMediaSource(mediaSource);
             player.prepare();
             player.setPlayWhenReady(true);
 
@@ -155,11 +164,16 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 public void onPlaybackStateChanged(int playbackState) {
                     if (playbackState == Player.STATE_READY) {
                         // 播放器准备好了，隐藏加载遮罩
-                        loadingOverlay.setVisibility(View.GONE);
-                        playerStarted = true;
+                        if (!playerStarted) {
+                            loadingOverlay.setVisibility(View.GONE);
+                            playerStarted = true;
+                        }
                     } else if (playbackState == Player.STATE_BUFFERING) {
-                        // 如果是短暂的缓冲，不显示全屏遮罩
-                        // ExoPlayer 自身有缓冲指示器
+                        // 播放追上了下载进度，正在缓冲
+                        if (playerStarted) {
+                            tvLoadingStatus.setText("缓冲中...");
+                            loadingOverlay.setVisibility(View.VISIBLE);
+                        }
                     } else if (playbackState == Player.STATE_ENDED) {
                         // 播放结束
                         finish();
@@ -168,8 +182,19 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
                 @Override
                 public void onPlayerError(PlaybackException error) {
-                    Toast.makeText(VideoPlayerActivity.this,
-                            "播放出错: " + error.getMessage(), Toast.LENGTH_LONG).show();
+                    // 如果是由于文件不够长导致的错误，等待一下重试
+                    if (!playerStarted) {
+                        handler.postDelayed(() -> {
+                            if (!playerStarted && !isFinishing()) {
+                                // 重新尝试播放
+                                player.release();
+                                startPlayback(localPath, totalSize);
+                            }
+                        }, 500);
+                    } else {
+                        Toast.makeText(VideoPlayerActivity.this,
+                                "播放出错: " + error.getMessage(), Toast.LENGTH_LONG).show();
+                    }
                 }
             });
 
