@@ -145,10 +145,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
             playerView.setPlayer(player);
 
             Uri uri = Uri.fromFile(file);
-            MediaItem mediaItem = new MediaItem.fromUri(uri);
+            MediaItem mediaItem = MediaItem.fromUri(uri);
             player.setMediaItem(mediaItem);
             player.prepare();
-            player.playWhenReady = true;
+            player.setPlayWhenReady(true);
 
             player.addListener(new Player.Listener() {
                 @Override
