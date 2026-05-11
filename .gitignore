@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+build/
+*/build/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+local.properties
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keystore (不要上传签名文件)
+*.jks
+*.keystore
+
+# Local config
+*.properties
+!gradle/wrapper/gradle-wrapper.properties
+
+# APK (可选，如果你想发布APK可以注释掉这行)
+# *.apk
+
+# Log
+*.log
