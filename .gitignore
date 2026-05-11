@@ -19,8 +19,7 @@ Thumbs.db
 *.keystore
 
 # Local config
-*.properties
-!gradle/wrapper/gradle-wrapper.properties
+local.properties
 
 # APK (可选，如果你想发布APK可以注释掉这行)
 # *.apk
