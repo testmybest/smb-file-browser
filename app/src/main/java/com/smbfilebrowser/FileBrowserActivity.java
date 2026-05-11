@@ -523,11 +523,11 @@ public class FileBrowserActivity extends AppCompatActivity {
             if (item.isDirectory) {
                 holder.ivIcon.setImageResource(R.drawable.ic_folder);
                 holder.tvSize.setText("文件夹");
-                holder.tvSize.setTextColor("#FFB800");
+                holder.tvSize.setTextColor(0xFFFFB800);
             } else {
                 holder.ivIcon.setImageResource(getFileIcon(item));
                 holder.tvSize.setText(formatSize(item.size));
-                holder.tvSize.setTextColor("#757575");
+                holder.tvSize.setTextColor(0xFF757575);
             }
 
             if (item.modified > 0) {
