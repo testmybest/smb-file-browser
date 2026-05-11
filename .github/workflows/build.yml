@@ -27,11 +27,16 @@ jobs:
       run: chmod +x gradlew
       
     - name: Build Debug APK
-      run: ./gradlew assembleDebug --stacktrace --info 2>&1 | tail -200
+      run: ./gradlew assembleDebug --stacktrace
       
+    - name: List build outputs
+      run: |
+        echo "=== Checking APK output ==="
+        ls -la app/build/outputs/apk/debug/ || echo "Debug APK directory not found"
+        find app/build -name "*.apk" || echo "No APK files found"
+        
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
         name: app-debug
         path: app/build/outputs/apk/debug/app-debug.apk
-        if-no-files-found: error

@@ -3,10 +3,3 @@ plugins {
     id 'com.android.application' version '8.2.0' apply false
     id 'com.android.library' version '8.2.0' apply false
 }
-
-ext {
-    minSdkVersion = 24
-    targetSdkVersion = 34
-    compileSdkVersion = 34
-    ndkVersion = "25.2.9519653"
-}
