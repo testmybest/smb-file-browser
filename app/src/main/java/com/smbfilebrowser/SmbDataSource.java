@@ -86,7 +86,7 @@ public class SmbDataSource extends BaseDataSource {
             }
 
             long resolvedPosition = dataSpec.position;
-            bytesRemaining = dataSpec.length == C.LENGTH_UNSET
+            bytesRemaining = dataSpec.length == -1
                     ? fileSize - resolvedPosition
                     : Math.min(dataSpec.length, fileSize - resolvedPosition);
 
