@@ -4,6 +4,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -16,7 +17,6 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.datasource.DataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.ui.PlayerView;
@@ -24,12 +24,11 @@ import androidx.media3.ui.PlayerView;
 import java.util.Locale;
 
 /**
- * 视频/音频播放器 - 直接从 SMB 流播放（真正秒开）
- *
- * 原理：通过自定义 SmbDataSource 让 ExoPlayer 直接读取 SMB 网络流
- * 就像播放 HTTP 网络视频一样，不需要先下载到本地
+ * 视频/音频播放器 - 直接从 SMB 流播放
  */
 public class VideoPlayerActivity extends AppCompatActivity {
+
+    private static final String TAG = "VideoPlayer";
 
     private PlayerView playerView;
     private LinearLayout loadingOverlay;
@@ -70,13 +69,13 @@ public class VideoPlayerActivity extends AppCompatActivity {
             return;
         }
 
-        // 直接从 SMB 流播放
+        Log.d(TAG, "Playing file: " + remoteFilePath);
+        Log.d(TAG, "Host: " + smbManager.getCurrentHost());
+        Log.d(TAG, "Share: " + smbManager.getCurrentShare());
+
         startDirectPlayback();
     }
 
-    /**
-     * 直接从 SMB 流播放 — 不需要下载，像看网络视频一样
-     */
     @OptIn(markerClass = UnstableApi.class)
     private void startDirectPlayback() {
         loadingOverlay.setVisibility(View.VISIBLE);
@@ -84,6 +83,30 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
         new Thread(() -> {
             try {
+                // 构建正确的 SMB URI
+                // 格式: smb://host/share/path/to/file.mp4
+                StringBuilder uriBuilder = new StringBuilder();
+                uriBuilder.append("smb://");
+                uriBuilder.append(smbManager.getCurrentHost());
+                uriBuilder.append("/");
+                uriBuilder.append(smbManager.getCurrentShare());
+                
+                // 处理文件路径，确保以 / 开头但不含双斜杠
+                String filePath = remoteFilePath;
+                if (!filePath.startsWith("/")) {
+                    filePath = "/" + filePath;
+                }
+                // 将路径中的反斜杠替换为正斜杠
+                filePath = filePath.replace("\\", "/");
+                // 移除双斜杠
+                while (filePath.contains("//")) {
+                    filePath = filePath.replace("//", "/");
+                }
+                uriBuilder.append(filePath);
+                
+                String smbUri = uriBuilder.toString();
+                Log.d(TAG, "SMB URI: " + smbUri);
+
                 // 创建 SMB DataSource 工厂
                 SmbDataSource.Factory dataSourceFactory = new SmbDataSource.Factory(
                         smbManager.getCurrentHost(),
@@ -92,11 +115,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
                         smbManager.getCurrentPassword(),
                         smbManager.getBaseContext()
                 );
-
-                // 构建 SMB 文件的 URI（用 smb:// 前缀让 ExoPlayer 识别）
-                String smbUri = "smb://" + smbManager.getCurrentHost()
-                        + "/" + smbManager.getCurrentShare()
-                        + "/" + remoteFilePath;
 
                 handler.post(() -> {
                     try {
@@ -120,37 +138,38 @@ public class VideoPlayerActivity extends AppCompatActivity {
                                 if (playbackState == Player.STATE_READY) {
                                     loadingOverlay.setVisibility(View.GONE);
                                     playerStarted = true;
+                                    Log.d(TAG, "Player ready, playback started");
                                 } else if (playbackState == Player.STATE_BUFFERING) {
-                                    if (playerStarted) {
-                                        // 短暂缓冲，ExoPlayer 自身有缓冲指示器
-                                    }
+                                    Log.d(TAG, "Player buffering...");
                                 } else if (playbackState == Player.STATE_ENDED) {
+                                    Log.d(TAG, "Playback ended");
                                     finish();
                                 }
                             }
 
                             @Override
                             public void onPlayerError(PlaybackException error) {
+                                Log.e(TAG, "Player error: " + error.getMessage(), error);
                                 loadingOverlay.setVisibility(View.GONE);
+                                
                                 String errorMsg = error.getMessage();
-                                if (errorMsg != null && errorMsg.contains("SMB")) {
-                                    Toast.makeText(VideoPlayerActivity.this,
-                                            "连接失败: " + errorMsg, Toast.LENGTH_LONG).show();
-                                } else {
-                                    Toast.makeText(VideoPlayerActivity.this,
-                                            "播放出错: " + errorMsg, Toast.LENGTH_LONG).show();
-                                }
+                                if (errorMsg == null) errorMsg = "未知错误";
+                                
+                                Toast.makeText(VideoPlayerActivity.this,
+                                        "播放失败: " + errorMsg, Toast.LENGTH_LONG).show();
                             }
                         });
 
                     } catch (Exception e) {
+                        Log.e(TAG, "Setup error: " + e.getMessage(), e);
                         loadingOverlay.setVisibility(View.GONE);
                         Toast.makeText(VideoPlayerActivity.this,
-                                "播放失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                                "播放初始化失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
                     }
                 });
 
             } catch (Exception e) {
+                Log.e(TAG, "Connection error: " + e.getMessage(), e);
                 handler.post(() -> {
                     loadingOverlay.setVisibility(View.GONE);
                     Toast.makeText(VideoPlayerActivity.this,
