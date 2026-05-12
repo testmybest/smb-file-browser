@@ -5,7 +5,6 @@ import android.net.Uri;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.OptIn;
-import androidx.media3.common.C;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.BaseDataSource;
 import androidx.media3.datasource.DataSource;
@@ -104,7 +103,7 @@ public class SmbDataSource extends BaseDataSource {
     @Override
     public int read(@NonNull byte[] buffer, int offset, int length) throws IOException {
         if (bytesRemaining == 0) {
-            return C.RESULT_END_OF_STREAM;
+            return -1; // End of stream
         }
 
         int bytesRead;
@@ -115,7 +114,7 @@ public class SmbDataSource extends BaseDataSource {
         }
 
         if (bytesRead == -1) {
-            return C.RESULT_END_OF_STREAM;
+            return -1; // End of stream
         }
 
         bytesRemaining -= bytesRead;
