@@ -330,6 +330,15 @@ public class SMBManager {
     public void disconnect() { connected = false; }
 
     /**
+     * 获取当前连接信息（供 SmbDataSource 使用）
+     */
+    public String getCurrentHost() { return currentHost; }
+    public String getCurrentShare() { return currentShare; }
+    public String getCurrentUsername() { return currentUsername; }
+    public String getCurrentPassword() { return currentPassword; }
+    public CIFSContext getBaseContext() { return context; }
+
+    /**
      * 下载文件 - 从SMB下载到手机本地
      * @param remotePath SMB上的文件路径
      * @param localPath 手机上的保存路径
