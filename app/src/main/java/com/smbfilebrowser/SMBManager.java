@@ -533,10 +533,10 @@ public class SMBManager {
                 long lastTime = System.currentTimeMillis();
                 boolean readyNotified = false;
 
-                // 先下载 256KB 或文件的前 2%，让播放器可以秒开
-                // 256KB 足够解码器读取 MP4/MKV 的文件头和前几帧
-                long preBufferSize = Math.min(256 * 1024, fileSize / 50);
-                if (preBufferSize < 64 * 1024) preBufferSize = 64 * 1024; // 最小 64KB
+                // 先下载 2MB 或文件的前 5%，确保视频文件头完整
+                // MP4/MKV 文件头可能较大（moov atom 可能在文件末尾）
+                long preBufferSize = Math.min(2 * 1024 * 1024, fileSize / 20);
+                if (preBufferSize < 256 * 1024) preBufferSize = 256 * 1024; // 最小 256KB
 
                 while ((bytesRead = is.read(buffer)) != -1) {
                     os.write(buffer, 0, bytesRead);
