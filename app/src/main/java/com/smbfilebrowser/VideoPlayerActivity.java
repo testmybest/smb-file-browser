@@ -23,18 +23,10 @@ import java.util.Locale;
 
 /**
  * 视频/音频播放器 - 边下载边播放
- *
- * 工作原理：
- * 1. 下载到本地缓存文件
- * 2. 视频：缓冲 1MB 或 5% 后开始播放（确保文件头完整）
- * 3. 音频：缓冲 256KB 后开始播放
- * 4. 使用标准 ExoPlayer 播放本地文件
  */
 public class VideoPlayerActivity extends AppCompatActivity {
 
     private static final String TAG = "VideoPlayer";
-    private static final long VIDEO_PREBUFFER_SIZE = 1024 * 1024; // 1MB 视频预缓冲
-    private static final long AUDIO_PREBUFFER_SIZE = 256 * 1024;  // 256KB 音频预缓冲
 
     private PlayerView playerView;
     private LinearLayout loadingOverlay;
@@ -46,9 +38,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private Handler handler = new Handler(Looper.getMainLooper());
 
     private String remoteFilePath;
-    private String fileName;
     private boolean playerStarted = false;
-    private boolean isVideo = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -64,10 +54,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
         smbManager = SMBManager.getInstance();
 
         remoteFilePath = getIntent().getStringExtra("file_path");
-        fileName = getIntent().getStringExtra("file_name");
-
-        // 判断是视频还是音频
-        isVideo = isVideoFile(fileName);
+        String fileName = getIntent().getStringExtra("file_name");
 
         if (getSupportActionBar() != null) {
             getSupportActionBar().setTitle(fileName);
@@ -80,68 +67,42 @@ public class VideoPlayerActivity extends AppCompatActivity {
             return;
         }
 
-        Log.d(TAG, "Playing: " + remoteFilePath + " (isVideo: " + isVideo + ")");
+        Log.d(TAG, "Playing: " + remoteFilePath);
         startStreamPlayback();
     }
 
-    private boolean isVideoFile(String name) {
-        if (name == null) return false;
-        String lower = name.toLowerCase();
-        return lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".avi")
-                || lower.endsWith(".mov") || lower.endsWith(".flv") || lower.endsWith(".wmv")
-                || lower.endsWith(".m4v") || lower.endsWith(".3gp") || lower.endsWith(".ts");
-    }
-
-    /**
-     * 边下载边播放
-     */
     private void startStreamPlayback() {
         loadingOverlay.setVisibility(View.VISIBLE);
         tvLoadingStatus.setText("正在连接...");
         tvLoadingDetail.setText("");
 
         smbManager.streamFile(remoteFilePath, this, new SMBManager.StreamListener() {
-            private String localPath;
-            private long totalSize;
-            private boolean readyNotified = false;
-
             @Override
-            public void onReady(String path, long size) {
-                Log.d(TAG, "onReady: " + path + ", size: " + size);
-                this.localPath = path;
-                this.totalSize = size;
-                // 只是连接成功，等待足够数据缓冲
+            public void onReady(String localPath, long totalSize) {
+                Log.d(TAG, "onReady: " + localPath + ", size: " + totalSize);
+                handler.post(() -> {
+                    tvLoadingStatus.setText("正在播放...");
+                    startPlayer(localPath);
+                });
             }
 
             @Override
             public void onProgress(int percent, long downloaded, long total, long speed) {
-                if (readyNotified) return;
-
-                // 根据文件类型决定预缓冲大小
-                long prebufferSize = isVideo ? VIDEO_PREBUFFER_SIZE : AUDIO_PREBUFFER_SIZE;
-                // 对于大文件，预缓冲比例不超过 10%
-                long minPrebuffer = Math.min(prebufferSize, total / 10);
-                if (minPrebuffer < 64 * 1024) minPrebuffer = 64 * 1024; // 最小 64KB
-
-                if (downloaded >= minPrebuffer) {
-                    readyNotified = true;
-                    Log.d(TAG, "Prebuffer complete: " + downloaded + " bytes, starting playback");
-                    handler.post(() -> {
-                        tvLoadingStatus.setText("正在播放...");
-                        startPlayer(localPath);
-                    });
-                } else {
-                    handler.post(() -> {
+                handler.post(() -> {
+                    if (!playerStarted) {
                         tvLoadingStatus.setText("缓冲中 " + percent + "%");
-                        tvLoadingDetail.setText(formatSize(downloaded) + " / " + formatSize(minPrebuffer)
+                        tvLoadingDetail.setText(formatSize(downloaded) + " / " + formatSize(total)
                                 + "  " + formatSize(speed) + "/s");
-                    });
-                }
+                    }
+                    if (playerStarted && getSupportActionBar() != null) {
+                        getSupportActionBar().setSubtitle("缓存 " + percent + "%");
+                    }
+                });
             }
 
             @Override
-            public void onComplete(String path) {
-                Log.d(TAG, "onComplete: " + path);
+            public void onComplete(String localPath) {
+                Log.d(TAG, "onComplete: " + localPath);
                 handler.post(() -> {
                     if (getSupportActionBar() != null) {
                         getSupportActionBar().setSubtitle("缓存完成");
@@ -161,9 +122,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
         });
     }
 
-    /**
-     * 使用 ExoPlayer 播放本地文件
-     */
     private void startPlayer(String localPath) {
         try {
             File file = new File(localPath);
@@ -172,17 +130,9 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 return;
             }
 
-            // 对于视频文件，确保文件头已经下载（MP4 文件头通常在开头）
-            if (isVideo && file.length() < 64 * 1024) {
-                // 等待更多数据
-                handler.postDelayed(() -> startPlayer(localPath), 500);
-                return;
-            }
-
             player = new ExoPlayer.Builder(this).build();
             playerView.setPlayer(player);
 
-            // 使用标准方式播放本地文件
             Uri uri = Uri.fromFile(file);
             MediaItem mediaItem = MediaItem.fromUri(uri);
 
@@ -198,10 +148,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
                         if (!playerStarted) {
                             loadingOverlay.setVisibility(View.GONE);
                             playerStarted = true;
-                            Log.d(TAG, "Playback started successfully");
+                            Log.d(TAG, "Playback started");
                         }
-                    } else if (playbackState == Player.STATE_BUFFERING) {
-                        Log.d(TAG, "Buffering...");
                     } else if (playbackState == Player.STATE_ENDED) {
                         finish();
                     }
@@ -210,15 +158,15 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 @Override
                 public void onPlayerError(PlaybackException error) {
                     Log.e(TAG, "Player error: " + error.getMessage(), error);
-                    // 如果是文件不够长导致的错误，尝试等待后重试
-                    if (!playerStarted && isVideo) {
-                        Log.d(TAG, "Retrying in 1 second...");
+                    // 如果还没开始播放，可能是文件头还没下载完，等待重试
+                    if (!playerStarted) {
+                        Log.d(TAG, "Retrying in 500ms...");
                         handler.postDelayed(() -> {
                             if (!isFinishing()) {
                                 player.release();
                                 startPlayer(localPath);
                             }
-                        }, 1000);
+                        }, 500);
                     } else {
                         loadingOverlay.setVisibility(View.GONE);
                         Toast.makeText(VideoPlayerActivity.this,
@@ -227,7 +175,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 }
             });
 
-            Log.d(TAG, "Player created and preparing...");
+            Log.d(TAG, "Player created");
 
         } catch (Exception e) {
             Log.e(TAG, "startPlayer error: " + e.getMessage(), e);
