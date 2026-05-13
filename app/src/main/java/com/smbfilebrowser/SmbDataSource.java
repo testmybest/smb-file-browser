@@ -12,6 +12,7 @@ import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
 
 import java.io.IOException;
+import java.net.URLEncoder;
 
 import jcifs.CIFSContext;
 import jcifs.smb.NtlmPasswordAuthenticator;
@@ -60,13 +61,36 @@ public class SmbDataSource extends BaseDataSource {
             if (filePath == null) {
                 throw new IOException("URI path is null");
             }
+            
+            Log.d(TAG, "Original URI path: " + filePath);
+            
             // 去掉开头的斜杠
             if (filePath.startsWith("/")) {
                 filePath = filePath.substring(1);
             }
 
-            // 构建 SMB 路径
-            String smbPath = "smb://" + host + "/" + share + "/" + filePath;
+            // 构建 SMB 路径 - 对路径中的特殊字符进行编码
+            StringBuilder smbPathBuilder = new StringBuilder();
+            smbPathBuilder.append("smb://");
+            smbPathBuilder.append(host);
+            smbPathBuilder.append("/");
+            smbPathBuilder.append(share);
+            smbPathBuilder.append("/");
+            
+            // 对路径中的每个部分进行编码
+            String[] pathParts = filePath.split("/");
+            for (int i = 0; i < pathParts.length; i++) {
+                if (i > 0) {
+                    smbPathBuilder.append("/");
+                }
+                // URL 编码文件名中的特殊字符（空格、中文等）
+                String encoded = URLEncoder.encode(pathParts[i], "UTF-8");
+                // URLEncoder 会把空格变成 +，但 SMB 需要 %20
+                encoded = encoded.replace("+", "%20");
+                smbPathBuilder.append(encoded);
+            }
+            
+            String smbPath = smbPathBuilder.toString();
             Log.d(TAG, "Opening SMB path: " + smbPath);
 
             // 创建认证上下文
@@ -84,20 +108,38 @@ public class SmbDataSource extends BaseDataSource {
             // 打开 SMB 文件
             smbFile = new SmbFile(smbPath, authContext);
             
-            if (!smbFile.exists()) {
-                throw new IOException("SMB文件不存在: " + smbPath);
+            // 检查文件是否存在
+            try {
+                if (!smbFile.exists()) {
+                    throw new IOException("SMB文件不存在: " + smbPath);
+                }
+            } catch (SmbException e) {
+                Log.e(TAG, "SMB exists() check failed: " + e.getMessage(), e);
+                // 某些 SMB 服务器可能不支持 exists()，继续尝试打开
             }
 
             fileSize = smbFile.length();
             Log.d(TAG, "File size: " + fileSize);
+            
+            if (fileSize <= 0) {
+                Log.w(TAG, "File size is 0 or negative, trying to get size from URL");
+                // 尝试从 URL 连接获取文件大小
+                try {
+                    fileSize = smbFile.getContentLengthLong();
+                    Log.d(TAG, "Content length from URL: " + fileSize);
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not get content length: " + e.getMessage());
+                }
+            }
 
             // 创建输入流
             inputStream = new SmbFileInputStream(smbFile);
+            Log.d(TAG, "Input stream created successfully");
 
             // 支持 seek（拖动进度条）
             long skipBytes = dataSpec.position;
             if (skipBytes > 0) {
-                if (skipBytes < fileSize) {
+                if (skipBytes < fileSize || fileSize <= 0) {
                     long skipped = inputStream.skip(skipBytes);
                     Log.d(TAG, "Skipped " + skipped + " bytes");
                 } else {
@@ -110,6 +152,11 @@ public class SmbDataSource extends BaseDataSource {
                 bytesRemaining = Math.min(dataSpec.length, fileSize - skipBytes);
             } else {
                 bytesRemaining = fileSize - skipBytes;
+            }
+            
+            // 如果文件大小未知，设置为 Long.MAX_VALUE
+            if (bytesRemaining < 0) {
+                bytesRemaining = Long.MAX_VALUE;
             }
 
             Log.d(TAG, "Bytes remaining: " + bytesRemaining + ", position: " + skipBytes);
@@ -153,8 +200,8 @@ public class SmbDataSource extends BaseDataSource {
         }
 
         if (bytesRead == -1) {
-            // 流结束，但 bytesRemaining 还没归零（可能是网络问题）
-            if (bytesRemaining > 0) {
+            // 流结束
+            if (bytesRemaining > 0 && bytesRemaining != Long.MAX_VALUE) {
                 Log.w(TAG, "Unexpected end of stream, bytesRemaining: " + bytesRemaining);
             }
             return -1;
