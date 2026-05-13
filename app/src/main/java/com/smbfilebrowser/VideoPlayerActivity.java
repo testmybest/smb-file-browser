@@ -17,14 +17,22 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.FileDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.ui.PlayerView;
 
+import java.io.File;
 import java.util.Locale;
 
 /**
- * 视频/音频播放器 - 直接从 SMB 流播放
+ * 视频/音频播放器 - 边下载边播放
+ *
+ * 工作原理：
+ * 1. 立即开始下载到缓存文件（预缓冲 256KB）
+ * 2. 预缓冲完成后立即开始播放
+ * 3. 播放器读取不断增长的本地文件
+ * 4. 如果播放追上下载进度，ExoPlayer 会自动缓冲等待
  */
 public class VideoPlayerActivity extends AppCompatActivity {
 
@@ -69,114 +77,125 @@ public class VideoPlayerActivity extends AppCompatActivity {
             return;
         }
 
-        Log.d(TAG, "Playing file: " + remoteFilePath);
-        Log.d(TAG, "Host: " + smbManager.getCurrentHost());
-        Log.d(TAG, "Share: " + smbManager.getCurrentShare());
-
-        startDirectPlayback();
+        Log.d(TAG, "Playing: " + remoteFilePath);
+        startStreamPlayback();
     }
 
-    @OptIn(markerClass = UnstableApi.class)
-    private void startDirectPlayback() {
+    /**
+     * 边下载边播放 — 先缓冲 256KB 然后立即开始播放
+     */
+    private void startStreamPlayback() {
         loadingOverlay.setVisibility(View.VISIBLE);
         tvLoadingStatus.setText("正在连接...");
+        tvLoadingDetail.setText("");
 
-        new Thread(() -> {
-            try {
-                // 构建正确的 SMB URI
-                // 格式: smb://host/share/path/to/file.mp4
-                StringBuilder uriBuilder = new StringBuilder();
-                uriBuilder.append("smb://");
-                uriBuilder.append(smbManager.getCurrentHost());
-                uriBuilder.append("/");
-                uriBuilder.append(smbManager.getCurrentShare());
-                
-                // 处理文件路径，确保以 / 开头但不含双斜杠
-                String filePath = remoteFilePath;
-                if (!filePath.startsWith("/")) {
-                    filePath = "/" + filePath;
-                }
-                // 将路径中的反斜杠替换为正斜杠
-                filePath = filePath.replace("\\", "/");
-                // 移除双斜杠
-                while (filePath.contains("//")) {
-                    filePath = filePath.replace("//", "/");
-                }
-                uriBuilder.append(filePath);
-                
-                String smbUri = uriBuilder.toString();
-                Log.d(TAG, "SMB URI: " + smbUri);
-
-                // 创建 SMB DataSource 工厂
-                SmbDataSource.Factory dataSourceFactory = new SmbDataSource.Factory(
-                        smbManager.getCurrentHost(),
-                        smbManager.getCurrentShare(),
-                        smbManager.getCurrentUsername(),
-                        smbManager.getCurrentPassword(),
-                        smbManager.getBaseContext()
-                );
-
+        smbManager.streamFile(remoteFilePath, this, new SMBManager.StreamListener() {
+            @Override
+            public void onReady(String localPath, long totalSize) {
+                Log.d(TAG, "onReady: " + localPath + ", size: " + totalSize);
+                // 预缓冲完成，立即开始播放
                 handler.post(() -> {
-                    try {
-                        player = new ExoPlayer.Builder(VideoPlayerActivity.this).build();
-                        playerView.setPlayer(player);
+                    tvLoadingStatus.setText("正在播放...");
+                    startPlayer(localPath);
+                });
+            }
 
-                        MediaItem mediaItem = new MediaItem.Builder()
-                                .setUri(Uri.parse(smbUri))
-                                .build();
-
-                        ProgressiveMediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
-                                .createMediaSource(mediaItem);
-
-                        player.setMediaSource(mediaSource);
-                        player.prepare();
-                        player.setPlayWhenReady(true);
-
-                        player.addListener(new Player.Listener() {
-                            @Override
-                            public void onPlaybackStateChanged(int playbackState) {
-                                if (playbackState == Player.STATE_READY) {
-                                    loadingOverlay.setVisibility(View.GONE);
-                                    playerStarted = true;
-                                    Log.d(TAG, "Player ready, playback started");
-                                } else if (playbackState == Player.STATE_BUFFERING) {
-                                    Log.d(TAG, "Player buffering...");
-                                } else if (playbackState == Player.STATE_ENDED) {
-                                    Log.d(TAG, "Playback ended");
-                                    finish();
-                                }
-                            }
-
-                            @Override
-                            public void onPlayerError(PlaybackException error) {
-                                Log.e(TAG, "Player error: " + error.getMessage(), error);
-                                loadingOverlay.setVisibility(View.GONE);
-                                
-                                String errorMsg = error.getMessage();
-                                if (errorMsg == null) errorMsg = "未知错误";
-                                
-                                Toast.makeText(VideoPlayerActivity.this,
-                                        "播放失败: " + errorMsg, Toast.LENGTH_LONG).show();
-                            }
-                        });
-
-                    } catch (Exception e) {
-                        Log.e(TAG, "Setup error: " + e.getMessage(), e);
-                        loadingOverlay.setVisibility(View.GONE);
-                        Toast.makeText(VideoPlayerActivity.this,
-                                "播放初始化失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            @Override
+            public void onProgress(int percent, long downloaded, long total, long speed) {
+                handler.post(() -> {
+                    if (!playerStarted) {
+                        tvLoadingStatus.setText("缓冲中 " + percent + "%");
+                        tvLoadingDetail.setText(formatSize(downloaded) + " / " + formatSize(total)
+                                + "  " + formatSize(speed) + "/s");
+                    }
+                    if (playerStarted && getSupportActionBar() != null) {
+                        getSupportActionBar().setSubtitle("缓存 " + percent + "%");
                     }
                 });
+            }
 
-            } catch (Exception e) {
-                Log.e(TAG, "Connection error: " + e.getMessage(), e);
+            @Override
+            public void onComplete(String localPath) {
+                Log.d(TAG, "onComplete: " + localPath);
+                handler.post(() -> {
+                    if (getSupportActionBar() != null) {
+                        getSupportActionBar().setSubtitle("缓存完成");
+                    }
+                });
+            }
+
+            @Override
+            public void onFailed(String error) {
+                Log.e(TAG, "onFailed: " + error);
                 handler.post(() -> {
                     loadingOverlay.setVisibility(View.GONE);
                     Toast.makeText(VideoPlayerActivity.this,
-                            "连接失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                            "加载失败: " + error, Toast.LENGTH_LONG).show();
                 });
             }
-        }).start();
+        });
+    }
+
+    /**
+     * 使用 ExoPlayer 播放本地缓存文件（文件正在不断增长）
+     */
+    @OptIn(markerClass = UnstableApi.class)
+    private void startPlayer(String localPath) {
+        try {
+            File file = new File(localPath);
+            if (!file.exists()) {
+                Toast.makeText(this, "缓存文件不存在", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            player = new ExoPlayer.Builder(this).build();
+            playerView.setPlayer(player);
+
+            FileDataSource.Factory factory = new FileDataSource.Factory();
+            Uri uri = Uri.fromFile(file);
+            MediaItem mediaItem = MediaItem.fromUri(uri);
+
+            ProgressiveMediaSource mediaSource = new ProgressiveMediaSource.Factory(factory)
+                    .createMediaSource(mediaItem);
+
+            player.setMediaSource(mediaSource);
+            player.prepare();
+            player.setPlayWhenReady(true);
+
+            player.addListener(new Player.Listener() {
+                @Override
+                public void onPlaybackStateChanged(int playbackState) {
+                    Log.d(TAG, "Playback state: " + playbackState);
+                    if (playbackState == Player.STATE_READY) {
+                        if (!playerStarted) {
+                            loadingOverlay.setVisibility(View.GONE);
+                            playerStarted = true;
+                        }
+                    } else if (playbackState == Player.STATE_BUFFERING) {
+                        if (playerStarted) {
+                            // 短暂缓冲，ExoPlayer 自身有缓冲指示器
+                        }
+                    } else if (playbackState == Player.STATE_ENDED) {
+                        finish();
+                    }
+                }
+
+                @Override
+                public void onPlayerError(PlaybackException error) {
+                    Log.e(TAG, "Player error: " + error.getMessage(), error);
+                    loadingOverlay.setVisibility(View.GONE);
+                    Toast.makeText(VideoPlayerActivity.this,
+                            "播放出错: " + error.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            });
+
+            Log.d(TAG, "Player created and preparing...");
+
+        } catch (Exception e) {
+            Log.e(TAG, "startPlayer error: " + e.getMessage(), e);
+            loadingOverlay.setVisibility(View.GONE);
+            Toast.makeText(this, "播放失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
