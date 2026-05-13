@@ -12,6 +12,7 @@ import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
 
 import java.io.IOException;
+import java.net.URLEncoder;
 
 import jcifs.CIFSContext;
 import jcifs.smb.NtlmPasswordAuthenticator;
@@ -70,8 +71,22 @@ public class SmbDataSource extends BaseDataSource {
                 filePath = filePath.substring(1);
             }
 
+            // 对路径进行 URL 编码（处理中文、空格等特殊字符）
+            String[] pathParts = filePath.split("/");
+            StringBuilder encodedPath = new StringBuilder();
+            for (int i = 0; i < pathParts.length; i++) {
+                if (i > 0) {
+                    encodedPath.append("/");
+                }
+                // URL 编码，处理中文和特殊字符
+                String encoded = URLEncoder.encode(pathParts[i], "UTF-8");
+                // URLEncoder 会把空格变成 +，但 SMB 需要 %20
+                encoded = encoded.replace("+", "%20");
+                encodedPath.append(encoded);
+            }
+
             // 构建 SMB 路径
-            String smbPath = "smb://" + host + "/" + share + "/" + filePath;
+            String smbPath = "smb://" + host + "/" + share + "/" + encodedPath.toString();
             Log.d(TAG, "Opening SMB path: " + smbPath);
 
             // 创建认证上下文
