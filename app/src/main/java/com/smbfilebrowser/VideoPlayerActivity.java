@@ -11,11 +11,15 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.FileDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.ui.PlayerView;
 
 import java.io.File;
@@ -23,10 +27,15 @@ import java.util.Locale;
 
 /**
  * 视频/音频播放器 - 边下载边播放
+ *
+ * 使用 FileDataSource 支持读取不断增长的文件
  */
+@OptIn(markerClass = UnstableApi.class)
 public class VideoPlayerActivity extends AppCompatActivity {
 
     private static final String TAG = "VideoPlayer";
+    private static final int MAX_RETRIES = 20;
+    private static final int RETRY_DELAY_MS = 500;
 
     private PlayerView playerView;
     private LinearLayout loadingOverlay;
@@ -38,7 +47,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private Handler handler = new Handler(Looper.getMainLooper());
 
     private String remoteFilePath;
+    private String localCachePath;
     private boolean playerStarted = false;
+    private int retryCount = 0;
+    private boolean downloadComplete = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -80,8 +92,9 @@ public class VideoPlayerActivity extends AppCompatActivity {
             @Override
             public void onReady(String localPath, long totalSize) {
                 Log.d(TAG, "onReady: " + localPath + ", size: " + totalSize);
+                localCachePath = localPath;
                 handler.post(() -> {
-                    tvLoadingStatus.setText("正在播放...");
+                    tvLoadingStatus.setText("准备播放...");
                     startPlayer(localPath);
                 });
             }
@@ -103,6 +116,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
             @Override
             public void onComplete(String localPath) {
                 Log.d(TAG, "onComplete: " + localPath);
+                downloadComplete = true;
                 handler.post(() -> {
                     if (getSupportActionBar() != null) {
                         getSupportActionBar().setSubtitle("缓存完成");
@@ -123,6 +137,24 @@ public class VideoPlayerActivity extends AppCompatActivity {
     }
 
     private void startPlayer(String localPath) {
+        if (retryCount >= MAX_RETRIES) {
+            Log.e(TAG, "Max retries reached, waiting for more data...");
+            // 如果还没开始播放且下载还没完成，继续等待
+            if (!downloadComplete) {
+                handler.postDelayed(() -> {
+                    if (!isFinishing()) {
+                        retryCount = 0; // 重置重试计数
+                        startPlayer(localPath);
+                    }
+                }, RETRY_DELAY_MS);
+                return;
+            }
+            // 下载已完成但还是失败
+            loadingOverlay.setVisibility(View.GONE);
+            Toast.makeText(this, "播放失败：文件可能损坏", Toast.LENGTH_LONG).show();
+            return;
+        }
+
         try {
             File file = new File(localPath);
             if (!file.exists()) {
@@ -130,6 +162,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 return;
             }
 
+            // 如果已有播放器，先释放
             if (player != null) {
                 player.release();
                 player = null;
@@ -138,10 +171,15 @@ public class VideoPlayerActivity extends AppCompatActivity {
             player = new ExoPlayer.Builder(this).build();
             playerView.setPlayer(player);
 
+            // 使用 FileDataSource 支持读取不断增长的文件
+            FileDataSource.Factory dataSourceFactory = new FileDataSource.Factory();
             Uri uri = Uri.fromFile(file);
             MediaItem mediaItem = MediaItem.fromUri(uri);
 
-            player.setMediaItem(mediaItem);
+            ProgressiveMediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
+                    .createMediaSource(mediaItem);
+
+            player.setMediaSource(mediaSource);
             player.prepare();
             player.setPlayWhenReady(true);
 
@@ -153,6 +191,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
                         if (!playerStarted) {
                             loadingOverlay.setVisibility(View.GONE);
                             playerStarted = true;
+                            retryCount = 0;
+                            Log.d(TAG, "Playback started successfully");
                         }
                     } else if (playbackState == Player.STATE_ENDED) {
                         finish();
@@ -161,17 +201,24 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
                 @Override
                 public void onPlayerError(PlaybackException error) {
-                    Log.e(TAG, "Error: " + error.getMessage(), error);
+                    Log.e(TAG, "Error: " + error.getMessage() + ", retry: " + retryCount);
+                    
+                    // 如果还没开始播放，可能是文件头还没下载完，等待重试
                     if (!playerStarted) {
-                        // 文件头可能还没下载完，等待后重试
+                        retryCount++;
+                        Log.d(TAG, "Retrying in " + RETRY_DELAY_MS + "ms... (" + retryCount + "/" + MAX_RETRIES + ")");
+                        
+                        // 释放当前播放器
+                        player.release();
+                        player = null;
+                        
                         handler.postDelayed(() -> {
                             if (!isFinishing()) {
-                                player.release();
-                                player = null;
                                 startPlayer(localPath);
                             }
-                        }, 1000);
+                        }, RETRY_DELAY_MS);
                     } else {
+                        // 已经开始播放后出错
                         loadingOverlay.setVisibility(View.GONE);
                         Toast.makeText(VideoPlayerActivity.this,
                                 "播放出错: " + error.getMessage(), Toast.LENGTH_LONG).show();
