@@ -12,7 +12,6 @@ import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
 
 import java.io.IOException;
-import java.net.URLEncoder;
 
 import jcifs.CIFSContext;
 import jcifs.smb.NtlmPasswordAuthenticator;
@@ -22,6 +21,8 @@ import jcifs.smb.SmbFileInputStream;
 
 /**
  * ExoPlayer DataSource - 直接从 SMB 共享读取视频流
+ * 
+ * 实现真正的流式播放，不需要等待下载完成
  */
 @OptIn(markerClass = UnstableApi.class)
 public class SmbDataSource extends BaseDataSource {
@@ -69,28 +70,8 @@ public class SmbDataSource extends BaseDataSource {
                 filePath = filePath.substring(1);
             }
 
-            // 构建 SMB 路径 - 对路径中的特殊字符进行编码
-            StringBuilder smbPathBuilder = new StringBuilder();
-            smbPathBuilder.append("smb://");
-            smbPathBuilder.append(host);
-            smbPathBuilder.append("/");
-            smbPathBuilder.append(share);
-            smbPathBuilder.append("/");
-            
-            // 对路径中的每个部分进行编码
-            String[] pathParts = filePath.split("/");
-            for (int i = 0; i < pathParts.length; i++) {
-                if (i > 0) {
-                    smbPathBuilder.append("/");
-                }
-                // URL 编码文件名中的特殊字符（空格、中文等）
-                String encoded = URLEncoder.encode(pathParts[i], "UTF-8");
-                // URLEncoder 会把空格变成 +，但 SMB 需要 %20
-                encoded = encoded.replace("+", "%20");
-                smbPathBuilder.append(encoded);
-            }
-            
-            String smbPath = smbPathBuilder.toString();
+            // 构建 SMB 路径
+            String smbPath = "smb://" + host + "/" + share + "/" + filePath;
             Log.d(TAG, "Opening SMB path: " + smbPath);
 
             // 创建认证上下文
@@ -108,38 +89,18 @@ public class SmbDataSource extends BaseDataSource {
             // 打开 SMB 文件
             smbFile = new SmbFile(smbPath, authContext);
             
-            // 检查文件是否存在
-            try {
-                if (!smbFile.exists()) {
-                    throw new IOException("SMB文件不存在: " + smbPath);
-                }
-            } catch (SmbException e) {
-                Log.e(TAG, "SMB exists() check failed: " + e.getMessage(), e);
-                // 某些 SMB 服务器可能不支持 exists()，继续尝试打开
-            }
-
+            // 获取文件大小
             fileSize = smbFile.length();
             Log.d(TAG, "File size: " + fileSize);
-            
-            if (fileSize <= 0) {
-                Log.w(TAG, "File size is 0 or negative, trying to get size from URL");
-                // 尝试从 URL 连接获取文件大小
-                try {
-                    fileSize = smbFile.getContentLengthLong();
-                    Log.d(TAG, "Content length from URL: " + fileSize);
-                } catch (Exception e) {
-                    Log.w(TAG, "Could not get content length: " + e.getMessage());
-                }
-            }
 
-            // 创建输入流
+            // 创建输入流 - 这是关键，直接打开流读取
             inputStream = new SmbFileInputStream(smbFile);
-            Log.d(TAG, "Input stream created successfully");
+            Log.d(TAG, "Input stream created");
 
             // 支持 seek（拖动进度条）
             long skipBytes = dataSpec.position;
             if (skipBytes > 0) {
-                if (skipBytes < fileSize || fileSize <= 0) {
+                if (skipBytes < fileSize) {
                     long skipped = inputStream.skip(skipBytes);
                     Log.d(TAG, "Skipped " + skipped + " bytes");
                 } else {
