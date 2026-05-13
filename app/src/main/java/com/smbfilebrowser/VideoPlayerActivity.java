@@ -23,10 +23,18 @@ import java.util.Locale;
 
 /**
  * 视频/音频播放器 - 边下载边播放
+ *
+ * 工作原理：
+ * 1. SMBManager 在后台线程下载文件到本地缓存
+ * 2. 下载 256KB 后通知可以开始播放
+ * 3. 播放器开始播放，同时后台继续下载
+ * 4. 如果播放追上下载进度，ExoPlayer 会自动缓冲等待
  */
 public class VideoPlayerActivity extends AppCompatActivity {
 
     private static final String TAG = "VideoPlayer";
+    private static final int RETRY_DELAY_MS = 500;
+    private static final int MAX_RETRIES = 10;
 
     private PlayerView playerView;
     private LinearLayout loadingOverlay;
@@ -38,7 +46,9 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private Handler handler = new Handler(Looper.getMainLooper());
 
     private String remoteFilePath;
+    private String localCachePath;
     private boolean playerStarted = false;
+    private int retryCount = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -71,6 +81,9 @@ public class VideoPlayerActivity extends AppCompatActivity {
         startStreamPlayback();
     }
 
+    /**
+     * 开始流式播放 - 后台下载，边下边播
+     */
     private void startStreamPlayback() {
         loadingOverlay.setVisibility(View.VISIBLE);
         tvLoadingStatus.setText("正在连接...");
@@ -80,6 +93,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
             @Override
             public void onReady(String localPath, long totalSize) {
                 Log.d(TAG, "onReady: " + localPath + ", size: " + totalSize);
+                localCachePath = localPath;
                 handler.post(() -> {
                     tvLoadingStatus.setText("正在播放...");
                     startPlayer(localPath);
@@ -122,12 +136,28 @@ public class VideoPlayerActivity extends AppCompatActivity {
         });
     }
 
+    /**
+     * 启动播放器
+     */
     private void startPlayer(String localPath) {
+        if (retryCount >= MAX_RETRIES) {
+            Log.e(TAG, "Max retries reached");
+            loadingOverlay.setVisibility(View.GONE);
+            Toast.makeText(this, "播放失败：无法读取文件", Toast.LENGTH_LONG).show();
+            return;
+        }
+
         try {
             File file = new File(localPath);
             if (!file.exists()) {
                 Toast.makeText(this, "缓存文件不存在", Toast.LENGTH_SHORT).show();
                 return;
+            }
+
+            // 如果已有播放器，先释放
+            if (player != null) {
+                player.release();
+                player = null;
             }
 
             player = new ExoPlayer.Builder(this).build();
@@ -148,7 +178,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
                         if (!playerStarted) {
                             loadingOverlay.setVisibility(View.GONE);
                             playerStarted = true;
-                            Log.d(TAG, "Playback started");
+                            retryCount = 0;
+                            Log.d(TAG, "Playback started successfully");
                         }
                     } else if (playbackState == Player.STATE_ENDED) {
                         finish();
@@ -157,17 +188,19 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
                 @Override
                 public void onPlayerError(PlaybackException error) {
-                    Log.e(TAG, "Player error: " + error.getMessage(), error);
+                    Log.e(TAG, "Player error: " + error.getMessage() + ", retryCount: " + retryCount);
+                    
                     // 如果还没开始播放，可能是文件头还没下载完，等待重试
                     if (!playerStarted) {
-                        Log.d(TAG, "Retrying in 500ms...");
+                        retryCount++;
+                        Log.d(TAG, "Retrying in " + RETRY_DELAY_MS + "ms... (" + retryCount + "/" + MAX_RETRIES + ")");
                         handler.postDelayed(() -> {
                             if (!isFinishing()) {
-                                player.release();
                                 startPlayer(localPath);
                             }
-                        }, 500);
+                        }, RETRY_DELAY_MS);
                     } else {
+                        // 已经开始播放后出错，显示错误
                         loadingOverlay.setVisibility(View.GONE);
                         Toast.makeText(VideoPlayerActivity.this,
                                 "播放出错: " + error.getMessage(), Toast.LENGTH_LONG).show();
@@ -175,7 +208,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 }
             });
 
-            Log.d(TAG, "Player created");
+            Log.d(TAG, "Player created, waiting for ready...");
 
         } catch (Exception e) {
             Log.e(TAG, "startPlayer error: " + e.getMessage(), e);
