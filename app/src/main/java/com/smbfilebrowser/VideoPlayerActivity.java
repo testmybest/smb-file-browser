@@ -1,5 +1,6 @@
 package com.smbfilebrowser;
 
+import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -11,31 +12,25 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
-import androidx.media3.common.util.UnstableApi;
-import androidx.media3.datasource.FileDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
-import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.ui.PlayerView;
 
 import java.io.File;
 import java.util.Locale;
 
 /**
- * 视频/音频播放器 - 边下载边播放
+ * 视频/音频播放器 - 支持多种播放方式
  *
- * 使用 FileDataSource 支持读取不断增长的文件
+ * 1. 优先尝试调用第三方播放器（MX Player、VLC等）直接播放SMB
+ * 2. 如果第三方播放器不可用，使用内置播放器边下载边播放
  */
-@OptIn(markerClass = UnstableApi.class)
 public class VideoPlayerActivity extends AppCompatActivity {
 
     private static final String TAG = "VideoPlayer";
-    private static final int MAX_RETRIES = 20;
-    private static final int RETRY_DELAY_MS = 500;
 
     private PlayerView playerView;
     private LinearLayout loadingOverlay;
@@ -47,10 +42,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private Handler handler = new Handler(Looper.getMainLooper());
 
     private String remoteFilePath;
-    private String localCachePath;
+    private String fileName;
     private boolean playerStarted = false;
-    private int retryCount = 0;
-    private boolean downloadComplete = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -66,7 +59,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
         smbManager = SMBManager.getInstance();
 
         remoteFilePath = getIntent().getStringExtra("file_path");
-        String fileName = getIntent().getStringExtra("file_name");
+        fileName = getIntent().getStringExtra("file_name");
 
         if (getSupportActionBar() != null) {
             getSupportActionBar().setTitle(fileName);
@@ -80,9 +73,102 @@ public class VideoPlayerActivity extends AppCompatActivity {
         }
 
         Log.d(TAG, "Playing: " + remoteFilePath);
+        
+        // 尝试调用第三方播放器直接播放SMB
+        if (tryExternalPlayer()) {
+            return;
+        }
+        
+        // 如果没有第三方播放器，使用内置播放器
         startStreamPlayback();
     }
 
+    /**
+     * 尝试调用第三方播放器直接播放SMB
+     * 
+     * MX Player、VLC 等播放器原生支持 SMB 协议
+     */
+    private boolean tryExternalPlayer() {
+        try {
+            // 构建 SMB URI
+            String smbUri = "smb://" + smbManager.getCurrentHost() 
+                    + "/" + smbManager.getCurrentShare() 
+                    + "/" + remoteFilePath;
+            
+            Log.d(TAG, "Trying external player with: " + smbUri);
+
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
+            
+            // 添加 SMB 认证信息
+            if (smbManager.getCurrentUsername() != null && !smbManager.getCurrentUsername().isEmpty()) {
+                intent.putExtra("username", smbManager.getCurrentUsername());
+                intent.putExtra("password", smbManager.getCurrentPassword());
+            }
+            
+            // 尝试 MX Player
+            intent.setPackage("com.mxtech.videoplayer.ad");
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                Log.d(TAG, "Using MX Player");
+                startActivity(intent);
+                finish();
+                return true;
+            }
+            
+            // 尝试 MX Player Pro
+            intent.setPackage("com.mxtech.videoplayer.pro");
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                Log.d(TAG, "Using MX Player Pro");
+                startActivity(intent);
+                finish();
+                return true;
+            }
+            
+            // 尝试 VLC
+            intent.setPackage("org.videolan.vlc");
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                Log.d(TAG, "Using VLC");
+                startActivity(intent);
+                finish();
+                return true;
+            }
+            
+            // 尝试其他支持 SMB 的播放器
+            intent.setPackage(null);
+            Intent chooser = Intent.createChooser(intent, "选择播放器");
+            if (chooser.resolveActivity(getPackageManager()) != null) {
+                Log.d(TAG, "Using system chooser");
+                startActivity(chooser);
+                finish();
+                return true;
+            }
+            
+        } catch (Exception e) {
+            Log.e(TAG, "External player failed: " + e.getMessage(), e);
+        }
+        
+        return false;
+    }
+
+    private String getMimeType(String fileName) {
+        if (fileName == null) return "video/*";
+        String lower = fileName.toLowerCase();
+        if (lower.endsWith(".mp4")) return "video/mp4";
+        if (lower.endsWith(".mkv")) return "video/x-matroska";
+        if (lower.endsWith(".avi")) return "video/x-msvideo";
+        if (lower.endsWith(".mov")) return "video/quicktime";
+        if (lower.endsWith(".flv")) return "video/x-flv";
+        if (lower.endsWith(".wmv")) return "video/x-ms-wmv";
+        if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".aac")) return "audio/aac";
+        if (lower.endsWith(".flac")) return "audio/flac";
+        if (lower.endsWith(".wav")) return "audio/wav";
+        return "video/*";
+    }
+
+    /**
+     * 边下载边播放（内置播放器）
+     */
     private void startStreamPlayback() {
         loadingOverlay.setVisibility(View.VISIBLE);
         tvLoadingStatus.setText("正在连接...");
@@ -92,9 +178,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
             @Override
             public void onReady(String localPath, long totalSize) {
                 Log.d(TAG, "onReady: " + localPath + ", size: " + totalSize);
-                localCachePath = localPath;
                 handler.post(() -> {
-                    tvLoadingStatus.setText("准备播放...");
+                    tvLoadingStatus.setText("正在播放...");
                     startPlayer(localPath);
                 });
             }
@@ -116,7 +201,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
             @Override
             public void onComplete(String localPath) {
                 Log.d(TAG, "onComplete: " + localPath);
-                downloadComplete = true;
                 handler.post(() -> {
                     if (getSupportActionBar() != null) {
                         getSupportActionBar().setSubtitle("缓存完成");
@@ -137,24 +221,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
     }
 
     private void startPlayer(String localPath) {
-        if (retryCount >= MAX_RETRIES) {
-            Log.e(TAG, "Max retries reached, waiting for more data...");
-            // 如果还没开始播放且下载还没完成，继续等待
-            if (!downloadComplete) {
-                handler.postDelayed(() -> {
-                    if (!isFinishing()) {
-                        retryCount = 0; // 重置重试计数
-                        startPlayer(localPath);
-                    }
-                }, RETRY_DELAY_MS);
-                return;
-            }
-            // 下载已完成但还是失败
-            loadingOverlay.setVisibility(View.GONE);
-            Toast.makeText(this, "播放失败：文件可能损坏", Toast.LENGTH_LONG).show();
-            return;
-        }
-
         try {
             File file = new File(localPath);
             if (!file.exists()) {
@@ -162,24 +228,13 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 return;
             }
 
-            // 如果已有播放器，先释放
-            if (player != null) {
-                player.release();
-                player = null;
-            }
-
             player = new ExoPlayer.Builder(this).build();
             playerView.setPlayer(player);
 
-            // 使用 FileDataSource 支持读取不断增长的文件
-            FileDataSource.Factory dataSourceFactory = new FileDataSource.Factory();
             Uri uri = Uri.fromFile(file);
             MediaItem mediaItem = MediaItem.fromUri(uri);
 
-            ProgressiveMediaSource mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory)
-                    .createMediaSource(mediaItem);
-
-            player.setMediaSource(mediaSource);
+            player.setMediaItem(mediaItem);
             player.prepare();
             player.setPlayWhenReady(true);
 
@@ -188,12 +243,8 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 public void onPlaybackStateChanged(int playbackState) {
                     Log.d(TAG, "State: " + playbackState);
                     if (playbackState == Player.STATE_READY) {
-                        if (!playerStarted) {
-                            loadingOverlay.setVisibility(View.GONE);
-                            playerStarted = true;
-                            retryCount = 0;
-                            Log.d(TAG, "Playback started successfully");
-                        }
+                        loadingOverlay.setVisibility(View.GONE);
+                        playerStarted = true;
                     } else if (playbackState == Player.STATE_ENDED) {
                         finish();
                     }
@@ -201,28 +252,10 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
                 @Override
                 public void onPlayerError(PlaybackException error) {
-                    Log.e(TAG, "Error: " + error.getMessage() + ", retry: " + retryCount);
-                    
-                    // 如果还没开始播放，可能是文件头还没下载完，等待重试
-                    if (!playerStarted) {
-                        retryCount++;
-                        Log.d(TAG, "Retrying in " + RETRY_DELAY_MS + "ms... (" + retryCount + "/" + MAX_RETRIES + ")");
-                        
-                        // 释放当前播放器
-                        player.release();
-                        player = null;
-                        
-                        handler.postDelayed(() -> {
-                            if (!isFinishing()) {
-                                startPlayer(localPath);
-                            }
-                        }, RETRY_DELAY_MS);
-                    } else {
-                        // 已经开始播放后出错
-                        loadingOverlay.setVisibility(View.GONE);
-                        Toast.makeText(VideoPlayerActivity.this,
-                                "播放出错: " + error.getMessage(), Toast.LENGTH_LONG).show();
-                    }
+                    Log.e(TAG, "Error: " + error.getMessage(), error);
+                    loadingOverlay.setVisibility(View.GONE);
+                    Toast.makeText(VideoPlayerActivity.this,
+                            "播放出错: " + error.getMessage(), Toast.LENGTH_LONG).show();
                 }
             });
 
