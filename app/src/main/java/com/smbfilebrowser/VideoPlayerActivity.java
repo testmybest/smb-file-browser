@@ -158,26 +158,14 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 return true;
             }
             
-            // 尝试其他支持 SMB 的播放器
-            Intent genericIntent = new Intent(Intent.ACTION_VIEW);
-            genericIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
-            genericIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            
-            // 检查是否有应用可以处理这个 Intent
-            if (genericIntent.resolveActivity(getPackageManager()) != null) {
-                Log.d(TAG, "Using generic player");
-                Intent chooser = Intent.createChooser(genericIntent, "选择播放器");
-                startActivity(chooser);
-                finish();
-                return true;
-            }
+            // 没有找到已知的第三方播放器，返回 false 使用内置播放器
+            Log.d(TAG, "No supported external player found, will use built-in player");
+            return false;
             
         } catch (Exception e) {
             Log.e(TAG, "External player failed: " + e.getMessage(), e);
+            return false;
         }
-        
-        Log.d(TAG, "No external player found");
-        return false;
     }
 
     private String getMimeType(String fileName) {
