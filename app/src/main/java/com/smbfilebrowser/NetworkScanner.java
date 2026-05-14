@@ -14,6 +14,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import jcifs.CIFSContext;
+import jcifs.Configuration;
 import jcifs.context.BaseContext;
 import jcifs.smb.NtlmPasswordAuthenticator;
 import jcifs.smb.SmbFile;
@@ -165,7 +166,8 @@ public class NetworkScanner {
             Log.d(TAG, "Port 445 open on " + ip);
 
             // 尝试获取 SMB 信息
-            CIFSContext context = new BaseContext();
+            Configuration config = new Configuration();
+            CIFSContext context = new BaseContext(config);
             context = context.withCredentials(new NtlmPasswordAuthenticator(null, "Guest", ""));
 
             // 尝试列出共享
