@@ -14,8 +14,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import jcifs.CIFSContext;
-import jcifs.Configuration;
-import jcifs.context.BaseContext;
 import jcifs.smb.NtlmPasswordAuthenticator;
 import jcifs.smb.SmbFile;
 
@@ -32,6 +30,7 @@ public class NetworkScanner {
 
     private final Context context;
     private final WifiManager wifiManager;
+    private final CIFSContext smbContext;
     private ScanCallback callback;
     private ExecutorService executor;
     private volatile boolean scanning = false;
@@ -59,8 +58,9 @@ public class NetworkScanner {
         }
     }
 
-    public NetworkScanner(Context context) {
+    public NetworkScanner(Context context, CIFSContext smbContext) {
         this.context = context;
+        this.smbContext = smbContext;
         this.wifiManager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
     }
 
@@ -166,9 +166,7 @@ public class NetworkScanner {
             Log.d(TAG, "Port 445 open on " + ip);
 
             // 尝试获取 SMB 信息
-            Configuration config = new Configuration();
-            CIFSContext context = new BaseContext(config);
-            context = context.withCredentials(new NtlmPasswordAuthenticator(null, "Guest", ""));
+            CIFSContext context = smbContext.withCredentials(new NtlmPasswordAuthenticator(null, "Guest", ""));
 
             // 尝试列出共享
             String url = "smb://" + ip + "/";
