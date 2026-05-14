@@ -1,6 +1,5 @@
 package com.smbfilebrowser;
 
-import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -12,22 +11,26 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
 
 import java.io.File;
 import java.util.Locale;
 
 /**
- * 视频/音频播放器 - 支持多种播放方式
+ * 视频/音频播放器 - 支持真正的流式播放
  *
- * 1. 优先尝试调用第三方播放器（MX Player、VLC等）直接播放SMB
- * 2. 如果第三方播放器不可用，使用内置播放器边下载边播放
+ * 优先使用 SmbDataSource 直接流式播放（秒开）
+ * 如果失败，回退到边下载边播放模式
  */
+@OptIn(markerClass = UnstableApi.class)
 public class VideoPlayerActivity extends AppCompatActivity {
 
     private static final String TAG = "VideoPlayer";
@@ -74,123 +77,96 @@ public class VideoPlayerActivity extends AppCompatActivity {
 
         Log.d(TAG, "Playing: " + remoteFilePath);
         
-        // 尝试调用第三方播放器直接播放SMB
-        if (tryExternalPlayer()) {
-            return;
-        }
-        
-        // 如果没有第三方播放器，使用内置播放器
-        startStreamPlayback();
+        // 优先尝试直接流式播放（秒开）
+        startStreamingPlayback();
     }
 
     /**
-     * 尝试调用第三方播放器直接播放SMB
-     * 
-     * MX Player、VLC 等播放器原生支持 SMB 协议
+     * 使用 SmbDataSource 直接流式播放（秒开）
      */
-    private boolean tryExternalPlayer() {
+    private void startStreamingPlayback() {
+        loadingOverlay.setVisibility(View.VISIBLE);
+        tvLoadingStatus.setText("正在连接...");
+        tvLoadingDetail.setText("");
+
         try {
-            // 构建 SMB URI（需要对路径进行编码）
-            String encodedPath = remoteFilePath.replace(" ", "%20")
-                    .replace("&", "%26")
-                    .replace("[", "%5B")
-                    .replace("]", "%5D")
-                    .replace("#", "%23");
+            // 创建 SmbDataSource 工厂
+            SmbDataSource.Factory dataSourceFactory = new SmbDataSource.Factory(
+                    smbManager.getCurrentHost(),
+                    smbManager.getCurrentShare(),
+                    smbManager.getCurrentUsername(),
+                    smbManager.getCurrentPassword(),
+                    smbManager.getBaseContext()
+            );
+
+            // 创建 ExoPlayer，使用自定义 DataSource
+            player = new ExoPlayer.Builder(this)
+                    .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSourceFactory))
+                    .build();
             
+            playerView.setPlayer(player);
+
+            // 构建 SMB URI
             String smbUri = "smb://" + smbManager.getCurrentHost() 
                     + "/" + smbManager.getCurrentShare() 
-                    + "/" + encodedPath;
+                    + "/" + remoteFilePath;
             
-            Log.d(TAG, "Trying external player with: " + smbUri);
+            Log.d(TAG, "Streaming from: " + smbUri);
 
-            // 尝试 MX Player（免费版）
-            Intent mxIntent = new Intent(Intent.ACTION_VIEW);
-            mxIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
-            mxIntent.setPackage("com.mxtech.videoplayer.ad");
-            if (mxIntent.resolveActivity(getPackageManager()) != null) {
-                Log.d(TAG, "Using MX Player");
-                startActivity(mxIntent);
-                finish();
-                return true;
-            }
-            
-            // 尝试 MX Player Pro
-            Intent mxProIntent = new Intent(Intent.ACTION_VIEW);
-            mxProIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
-            mxProIntent.setPackage("com.mxtech.videoplayer.pro");
-            if (mxProIntent.resolveActivity(getPackageManager()) != null) {
-                Log.d(TAG, "Using MX Player Pro");
-                startActivity(mxProIntent);
-                finish();
-                return true;
-            }
-            
-            // 尝试 VLC
-            Intent vlcIntent = new Intent(Intent.ACTION_VIEW);
-            vlcIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
-            vlcIntent.setPackage("org.videolan.vlc");
-            if (vlcIntent.resolveActivity(getPackageManager()) != null) {
-                Log.d(TAG, "Using VLC");
-                startActivity(vlcIntent);
-                finish();
-                return true;
-            }
-            
-            // 尝试 nPlayer
-            Intent nplayerIntent = new Intent(Intent.ACTION_VIEW);
-            nplayerIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
-            nplayerIntent.setPackage("com.nplayer");
-            if (nplayerIntent.resolveActivity(getPackageManager()) != null) {
-                Log.d(TAG, "Using nPlayer");
-                startActivity(nplayerIntent);
-                finish();
-                return true;
-            }
-            
-            // 尝试 OPlayer
-            Intent oplayerIntent = new Intent(Intent.ACTION_VIEW);
-            oplayerIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
-            oplayerIntent.setPackage("com.olimsoft.android.oplayer");
-            if (oplayerIntent.resolveActivity(getPackageManager()) != null) {
-                Log.d(TAG, "Using OPlayer");
-                startActivity(oplayerIntent);
-                finish();
-                return true;
-            }
-            
-            // 没有找到已知的第三方播放器，返回 false 使用内置播放器
-            Log.d(TAG, "No supported external player found, will use built-in player");
-            return false;
-            
+            MediaItem mediaItem = MediaItem.fromUri(Uri.parse(smbUri));
+            player.setMediaItem(mediaItem);
+            player.prepare();
+            player.setPlayWhenReady(true);
+
+            player.addListener(new Player.Listener() {
+                @Override
+                public void onPlaybackStateChanged(int playbackState) {
+                    Log.d(TAG, "State: " + playbackState);
+                    if (playbackState == Player.STATE_READY) {
+                        loadingOverlay.setVisibility(View.GONE);
+                        playerStarted = true;
+                        Log.d(TAG, "Playback started successfully");
+                    } else if (playbackState == Player.STATE_ENDED) {
+                        finish();
+                    }
+                }
+
+                @Override
+                public void onPlayerError(PlaybackException error) {
+                    Log.e(TAG, "Player error: " + error.getMessage(), error);
+                    
+                    // 如果直接流式播放失败，回退到边下载边播放
+                    if (!playerStarted) {
+                        Log.d(TAG, "Streaming failed, fallback to download mode");
+                        player.release();
+                        player = null;
+                        handler.post(() -> {
+                            Toast.makeText(VideoPlayerActivity.this, 
+                                    "流式播放失败，切换到下载模式", Toast.LENGTH_SHORT).show();
+                            startDownloadPlayback();
+                        });
+                    } else {
+                        loadingOverlay.setVisibility(View.GONE);
+                        Toast.makeText(VideoPlayerActivity.this,
+                                "播放出错: " + error.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                }
+            });
+
         } catch (Exception e) {
-            Log.e(TAG, "External player failed: " + e.getMessage(), e);
-            return false;
+            Log.e(TAG, "startStreamingPlayback error: " + e.getMessage(), e);
+            // 如果初始化失败，回退到边下载边播放
+            handler.post(() -> {
+                Toast.makeText(this, "流式播放初始化失败，切换到下载模式", Toast.LENGTH_SHORT).show();
+                startDownloadPlayback();
+            });
         }
     }
 
-    private String getMimeType(String fileName) {
-        if (fileName == null) return "video/*";
-        String lower = fileName.toLowerCase();
-        if (lower.endsWith(".mp4")) return "video/mp4";
-        if (lower.endsWith(".mkv")) return "video/x-matroska";
-        if (lower.endsWith(".avi")) return "video/x-msvideo";
-        if (lower.endsWith(".mov")) return "video/quicktime";
-        if (lower.endsWith(".flv")) return "video/x-flv";
-        if (lower.endsWith(".wmv")) return "video/x-ms-wmv";
-        if (lower.endsWith(".ts")) return "video/mp2t";
-        if (lower.endsWith(".m3u8")) return "application/x-mpegURL";
-        if (lower.endsWith(".mp3")) return "audio/mpeg";
-        if (lower.endsWith(".aac")) return "audio/aac";
-        if (lower.endsWith(".flac")) return "audio/flac";
-        if (lower.endsWith(".wav")) return "audio/wav";
-        if (lower.endsWith(".ogg")) return "audio/ogg";
-        return "video/*";
-    }
-
     /**
-     * 边下载边播放（内置播放器）
+     * 边下载边播放（备用方案）
      */
-    private void startStreamPlayback() {
+    private void startDownloadPlayback() {
         loadingOverlay.setVisibility(View.VISIBLE);
         tvLoadingStatus.setText("正在连接...");
         tvLoadingDetail.setText("");
@@ -201,7 +177,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 Log.d(TAG, "onReady: " + localPath + ", size: " + totalSize);
                 handler.post(() -> {
                     tvLoadingStatus.setText("正在播放...");
-                    startPlayer(localPath);
+                    startPlayerWithFile(localPath);
                 });
             }
 
@@ -241,12 +217,17 @@ public class VideoPlayerActivity extends AppCompatActivity {
         });
     }
 
-    private void startPlayer(String localPath) {
+    private void startPlayerWithFile(String localPath) {
         try {
             File file = new File(localPath);
             if (!file.exists()) {
                 Toast.makeText(this, "缓存文件不存在", Toast.LENGTH_SHORT).show();
                 return;
+            }
+
+            if (player != null) {
+                player.release();
+                player = null;
             }
 
             player = new ExoPlayer.Builder(this).build();
