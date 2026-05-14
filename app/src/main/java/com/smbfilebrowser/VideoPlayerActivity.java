@@ -90,54 +90,83 @@ public class VideoPlayerActivity extends AppCompatActivity {
      */
     private boolean tryExternalPlayer() {
         try {
-            // 构建 SMB URI
+            // 构建 SMB URI（需要对路径进行编码）
+            String encodedPath = remoteFilePath.replace(" ", "%20")
+                    .replace("&", "%26")
+                    .replace("[", "%5B")
+                    .replace("]", "%5D")
+                    .replace("#", "%23");
+            
             String smbUri = "smb://" + smbManager.getCurrentHost() 
                     + "/" + smbManager.getCurrentShare() 
-                    + "/" + remoteFilePath;
+                    + "/" + encodedPath;
             
             Log.d(TAG, "Trying external player with: " + smbUri);
 
-            Intent intent = new Intent(Intent.ACTION_VIEW);
-            intent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
-            
-            // 添加 SMB 认证信息
-            if (smbManager.getCurrentUsername() != null && !smbManager.getCurrentUsername().isEmpty()) {
-                intent.putExtra("username", smbManager.getCurrentUsername());
-                intent.putExtra("password", smbManager.getCurrentPassword());
-            }
-            
-            // 尝试 MX Player
-            intent.setPackage("com.mxtech.videoplayer.ad");
-            if (intent.resolveActivity(getPackageManager()) != null) {
+            // 尝试 MX Player（免费版）
+            Intent mxIntent = new Intent(Intent.ACTION_VIEW);
+            mxIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
+            mxIntent.setPackage("com.mxtech.videoplayer.ad");
+            if (mxIntent.resolveActivity(getPackageManager()) != null) {
                 Log.d(TAG, "Using MX Player");
-                startActivity(intent);
+                startActivity(mxIntent);
                 finish();
                 return true;
             }
             
             // 尝试 MX Player Pro
-            intent.setPackage("com.mxtech.videoplayer.pro");
-            if (intent.resolveActivity(getPackageManager()) != null) {
+            Intent mxProIntent = new Intent(Intent.ACTION_VIEW);
+            mxProIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
+            mxProIntent.setPackage("com.mxtech.videoplayer.pro");
+            if (mxProIntent.resolveActivity(getPackageManager()) != null) {
                 Log.d(TAG, "Using MX Player Pro");
-                startActivity(intent);
+                startActivity(mxProIntent);
                 finish();
                 return true;
             }
             
             // 尝试 VLC
-            intent.setPackage("org.videolan.vlc");
-            if (intent.resolveActivity(getPackageManager()) != null) {
+            Intent vlcIntent = new Intent(Intent.ACTION_VIEW);
+            vlcIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
+            vlcIntent.setPackage("org.videolan.vlc");
+            if (vlcIntent.resolveActivity(getPackageManager()) != null) {
                 Log.d(TAG, "Using VLC");
-                startActivity(intent);
+                startActivity(vlcIntent);
+                finish();
+                return true;
+            }
+            
+            // 尝试 nPlayer
+            Intent nplayerIntent = new Intent(Intent.ACTION_VIEW);
+            nplayerIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
+            nplayerIntent.setPackage("com.nplayer");
+            if (nplayerIntent.resolveActivity(getPackageManager()) != null) {
+                Log.d(TAG, "Using nPlayer");
+                startActivity(nplayerIntent);
+                finish();
+                return true;
+            }
+            
+            // 尝试 OPlayer
+            Intent oplayerIntent = new Intent(Intent.ACTION_VIEW);
+            oplayerIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
+            oplayerIntent.setPackage("com.olimsoft.android.oplayer");
+            if (oplayerIntent.resolveActivity(getPackageManager()) != null) {
+                Log.d(TAG, "Using OPlayer");
+                startActivity(oplayerIntent);
                 finish();
                 return true;
             }
             
             // 尝试其他支持 SMB 的播放器
-            intent.setPackage(null);
-            Intent chooser = Intent.createChooser(intent, "选择播放器");
-            if (chooser.resolveActivity(getPackageManager()) != null) {
-                Log.d(TAG, "Using system chooser");
+            Intent genericIntent = new Intent(Intent.ACTION_VIEW);
+            genericIntent.setDataAndType(Uri.parse(smbUri), getMimeType(fileName));
+            genericIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            
+            // 检查是否有应用可以处理这个 Intent
+            if (genericIntent.resolveActivity(getPackageManager()) != null) {
+                Log.d(TAG, "Using generic player");
+                Intent chooser = Intent.createChooser(genericIntent, "选择播放器");
                 startActivity(chooser);
                 finish();
                 return true;
@@ -147,6 +176,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
             Log.e(TAG, "External player failed: " + e.getMessage(), e);
         }
         
+        Log.d(TAG, "No external player found");
         return false;
     }
 
@@ -159,10 +189,13 @@ public class VideoPlayerActivity extends AppCompatActivity {
         if (lower.endsWith(".mov")) return "video/quicktime";
         if (lower.endsWith(".flv")) return "video/x-flv";
         if (lower.endsWith(".wmv")) return "video/x-ms-wmv";
+        if (lower.endsWith(".ts")) return "video/mp2t";
+        if (lower.endsWith(".m3u8")) return "application/x-mpegURL";
         if (lower.endsWith(".mp3")) return "audio/mpeg";
         if (lower.endsWith(".aac")) return "audio/aac";
         if (lower.endsWith(".flac")) return "audio/flac";
         if (lower.endsWith(".wav")) return "audio/wav";
+        if (lower.endsWith(".ogg")) return "audio/ogg";
         return "video/*";
     }
 
