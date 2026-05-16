@@ -6,11 +6,13 @@ import android.net.wifi.WifiManager;
 import android.util.Log;
 
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import jcifs.CIFSContext;
@@ -20,13 +22,13 @@ import jcifs.smb.SmbFile;
 /**
  * 局域网 SMB 共享扫描器
  * 
- * 自动扫描同一 WiFi 下的 SMB 服务器和共享文件夹
+ * 快速扫描同一 WiFi 下的 SMB 服务器
  */
 public class NetworkScanner {
     private static final String TAG = "NetworkScanner";
     private static final int SMB_PORT = 445;
-    private static final int TIMEOUT_MS = 1000;
-    private static final int THREAD_POOL_SIZE = 20;
+    private static final int CONNECT_TIMEOUT = 300; // 300ms 超时
+    private static final int THREAD_POOL_SIZE = 50;
 
     private final Context context;
     private final WifiManager wifiManager;
@@ -54,7 +56,10 @@ public class NetworkScanner {
 
         @Override
         public String toString() {
-            return name != null && !name.isEmpty() ? name + " (" + ip + ")" : ip;
+            if (name != null && !name.isEmpty() && !name.equals(ip)) {
+                return name + " (" + ip + ")";
+            }
+            return ip;
         }
     }
 
@@ -81,145 +86,163 @@ public class NetworkScanner {
             try {
                 callback.onScanStarted();
 
-                // 获取本机 IP 和网段
                 String localIp = getLocalIpAddress();
                 if (localIp == null) {
-                    callback.onScanFailed("无法获取本机 IP 地址，请连接 WiFi");
+                    callback.onScanFailed("无法获取本机 IP，请确认已连接 WiFi");
                     return;
                 }
 
-                Log.d(TAG, "Local IP: " + localIp);
-
-                // 解析网段（例如 192.168.1）
                 String[] parts = localIp.split("\\.");
-                if (parts.length != 4) {
-                    callback.onScanFailed("IP 地址格式错误: " + localIp);
-                    return;
-                }
-
                 String subnet = parts[0] + "." + parts[1] + "." + parts[2];
-                Log.d(TAG, "Scanning subnet: " + subnet + ".x");
+                Log.d(TAG, "Scanning subnet: " + subnet + ".x (local: " + localIp + ")");
 
-                // 扫描 1-254
-                List<Future<SmbServer>> futures = new ArrayList<>();
+                // 第一阶段：快速扫描端口（50线程并行）
+                List<String> aliveHosts = new ArrayList<>();
+                List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+
                 for (int i = 1; i <= 254; i++) {
                     final String ip = subnet + "." + i;
-                    if (ip.equals(localIp)) {
-                        continue; // 跳过本机
-                    }
-                    futures.add(executor.submit(() -> scanHost(ip)));
-                }
+                    if (ip.equals(localIp)) continue;
 
-                // 收集结果
-                List<SmbServer> servers = new ArrayList<>();
-                for (Future<SmbServer> future : futures) {
-                    try {
-                        SmbServer server = future.get(TIMEOUT_MS * 2, TimeUnit.MILLISECONDS);
-                        if (server != null) {
-                            servers.add(server);
-                            Log.d(TAG, "Found server: " + server);
-                            // 通知 UI
-                            if (this.callback != null) {
-                                this.callback.onServerFound(server);
+                    futures.add(executor.submit(() -> {
+                        if (!scanning) return;
+                        if (isPortOpen(ip, SMB_PORT)) {
+                            synchronized (aliveHosts) {
+                                aliveHosts.add(ip);
                             }
                         }
-                    } catch (Exception e) {
-                        // 忽略超时
-                    }
+                    }));
                 }
 
-                Log.d(TAG, "Scan completed, found " + servers.size() + " servers");
-                callback.onScanCompleted(servers);
+                // 等待端口扫描完成
+                for (java.util.concurrent.Future<?> f : futures) {
+                    try { f.get(2, TimeUnit.SECONDS); } catch (Exception ignored) {}
+                }
+
+                Log.d(TAG, "Found " + aliveHosts.size() + " hosts with port 445 open");
+
+                if (!scanning) return;
+
+                // 第二阶段：对开放端口的主机尝试SMB连接
+                List<SmbServer> servers = new CopyOnWriteArrayList<>();
+                List<java.util.concurrent.Future<?>> smbFutures = new ArrayList<>();
+
+                for (String ip : aliveHosts) {
+                    if (!scanning) break;
+                    smbFutures.add(executor.submit(() -> {
+                        if (!scanning) return;
+                        try {
+                            SmbServer server = probeSmbServer(ip);
+                            if (server != null) {
+                                servers.add(server);
+                                if (callback != null) {
+                                    callback.onServerFound(server);
+                                }
+                            }
+                        } catch (Exception e) {
+                            Log.d(TAG, "Probe failed " + ip + ": " + e.getMessage());
+                        }
+                    }));
+                }
+
+                for (java.util.concurrent.Future<?> f : smbFutures) {
+                    try { f.get(5, TimeUnit.SECONDS); } catch (Exception ignored) {}
+                }
+
+                if (!scanning) return;
+
+                Log.d(TAG, "Scan completed: " + servers.size() + " SMB servers found");
+                callback.onScanCompleted(new ArrayList<>(servers));
 
             } catch (Exception e) {
-                Log.e(TAG, "Scan failed: " + e.getMessage(), e);
-                callback.onScanFailed("扫描失败: " + e.getMessage());
+                Log.e(TAG, "Scan error: " + e.getMessage(), e);
+                if (scanning) {
+                    callback.onScanFailed("扫描失败: " + e.getMessage());
+                }
             } finally {
                 scanning = false;
-                if (executor != null) {
-                    executor.shutdown();
-                }
+                if (executor != null) executor.shutdown();
             }
         }).start();
     }
 
     /**
-     * 停止扫描
+     * 探测SMB服务器
      */
-    public void stopScan() {
-        scanning = false;
-        if (executor != null) {
-            executor.shutdownNow();
-        }
-    }
-
-    /**
-     * 扫描单个主机
-     */
-    private SmbServer scanHost(String ip) {
+    private SmbServer probeSmbServer(String ip) {
         try {
-            // 先检查端口是否开放
-            if (!isPortOpen(ip, SMB_PORT, TIMEOUT_MS)) {
-                return null;
-            }
+            CIFSContext ctx = smbContext.withCredentials(
+                    new NtlmPasswordAuthenticator(null, "Guest", ""));
 
-            Log.d(TAG, "Port 445 open on " + ip);
-
-            // 尝试获取 SMB 信息
-            CIFSContext context = smbContext.withCredentials(new NtlmPasswordAuthenticator(null, "Guest", ""));
-
-            // 尝试列出共享
             String url = "smb://" + ip + "/";
-            SmbFile file = new SmbFile(url, context);
+            SmbFile file = new SmbFile(url, ctx);
+            
+            // 设置超时
+            file.setConnectTimeout(CONNECT_TIMEOUT * 1000);
+            file.setReadTimeout(CONNECT_TIMEOUT * 1000);
+
+            // 尝试连接
             file.connect();
 
-            String serverName = file.getServer();
+            String serverName;
+            try {
+                serverName = file.getServer();
+            } catch (Exception e) {
+                serverName = ip;
+            }
+
             SmbServer server = new SmbServer(ip, serverName);
 
-            // 列出共享文件夹
+            // 列出共享
             try {
                 SmbFile[] shares = file.listFiles();
                 if (shares != null) {
                     for (SmbFile share : shares) {
                         String name = share.getName();
                         if (name != null && !name.isEmpty()) {
-                            // 去掉末尾的斜杠
                             if (name.endsWith("/")) {
                                 name = name.substring(0, name.length() - 1);
                             }
-                            server.shares.add(name);
+                            // 过滤掉系统共享
+                            if (!name.startsWith("$") && !name.equals("IPC$")) {
+                                server.shares.add(name);
+                            }
                         }
                     }
                 }
             } catch (Exception e) {
-                Log.d(TAG, "Could not list shares on " + ip + ": " + e.getMessage());
+                Log.d(TAG, "Could not list shares on " + ip);
             }
 
+            // 至少要有一个非隐藏共享才算有效
+            if (!server.shares.isEmpty()) {
+                Log.d(TAG, "Found SMB server: " + server + " shares: " + server.shares);
+                return server;
+            }
+
+            // 即使没有列出共享，也返回（可能需要认证）
             return server;
 
         } catch (Exception e) {
-            Log.d(TAG, "Not an SMB server: " + ip + " - " + e.getMessage());
             return null;
         }
     }
 
     /**
-     * 检查端口是否开放
+     * 快速检查端口是否开放
      */
-    private boolean isPortOpen(String ip, int port, int timeout) {
+    private boolean isPortOpen(String ip, int port) {
+        Socket socket = null;
         try {
-            InetAddress address = InetAddress.getByName(ip);
-            if (!address.isReachable(timeout)) {
-                return false;
-            }
-            
-            // 尝试连接 SMB 端口
-            java.net.Socket socket = new java.net.Socket();
-            socket.connect(new java.net.InetSocketAddress(ip, port), timeout);
-            socket.close();
+            socket = new Socket();
+            socket.connect(new InetSocketAddress(ip, port), CONNECT_TIMEOUT);
             return true;
         } catch (Exception e) {
             return false;
+        } finally {
+            if (socket != null) {
+                try { socket.close(); } catch (Exception ignored) {}
+            }
         }
     }
 
@@ -227,30 +250,27 @@ public class NetworkScanner {
      * 获取本机 IP 地址
      */
     private String getLocalIpAddress() {
-        if (wifiManager == null) {
-            return null;
-        }
+        if (wifiManager == null) return null;
 
         WifiInfo wifiInfo = wifiManager.getConnectionInfo();
-        if (wifiInfo == null) {
-            return null;
-        }
+        if (wifiInfo == null) return null;
 
         int ipAddress = wifiInfo.getIpAddress();
-        if (ipAddress == 0) {
-            return null;
-        }
+        if (ipAddress == 0) return null;
 
-        // 将 int 转换为 String
         return ((ipAddress & 0xff) + "." +
                 ((ipAddress >> 8) & 0xff) + "." +
                 ((ipAddress >> 16) & 0xff) + "." +
                 ((ipAddress >> 24) & 0xff));
     }
 
-    /**
-     * 是否正在扫描
-     */
+    public void stopScan() {
+        scanning = false;
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+    }
+
     public boolean isScanning() {
         return scanning;
     }

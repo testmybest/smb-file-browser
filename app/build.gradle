@@ -61,6 +61,9 @@ dependencies {
     implementation 'androidx.media3:media3-exoplayer:1.2.1'
     implementation 'androidx.media3:media3-ui:1.2.1'
     
+    // HTTP服务器（用于SMB流代理）
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
+    
     // JSON解析
     implementation 'com.google.code.gson:gson:2.10.1'
 }
