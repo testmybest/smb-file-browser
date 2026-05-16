@@ -19,17 +19,10 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.ui.PlayerView;
 
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 
 /**
  * 视频/音频播放器 - 通过本地HTTP代理实现秒开
- *
- * 原理：
- * 1. 启动本地HTTP服务器（端口23333）
- * 2. 播放器访问 http://127.0.0.1:23333/stream/host/share/path/video.mp4
- * 3. HTTP服务器从SMB读取数据返回给播放器
- * 4. 支持Range请求，可以拖动进度条
- *
- * 参考：SMB-Steamer (https://github.com/CzBiX/SMB-Steamer)
  */
 @OptIn(markerClass = UnstableApi.class)
 public class VideoPlayerActivity extends AppCompatActivity {
@@ -90,16 +83,21 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 server.startServer();
                 Log.d(TAG, "HTTP server is running");
 
-                // 构建本地HTTP播放地址
-                // http://127.0.0.1:23333/stream/host/share/path
+                // 构建SMB流路径
+                // 格式: host/share/path/to/file.mp4
                 String streamPath = smbManager.getCurrentHost() + "/"
                         + smbManager.getCurrentShare() + "/"
                         + remoteFilePath;
 
-                // URL编码路径
-                String encodedPath = URLEncoder.encode(streamPath, "UTF-8")
-                        .replace("%2F", "/")  // 保留斜杠
-                        .replace("%3A", ":"); // 保留冒号
+                Log.d(TAG, "Stream path: " + streamPath);
+
+                // 对路径中的每一部分分别编码（处理中文、空格等）
+                String[] parts = streamPath.split("/");
+                StringBuilder encodedPath = new StringBuilder();
+                for (int i = 0; i < parts.length; i++) {
+                    if (i > 0) encodedPath.append("/");
+                    encodedPath.append(URLEncoder.encode(parts[i], StandardCharsets.UTF_8));
+                }
 
                 String httpUrl = "http://127.0.0.1:" + SmbHttpServer.PORT
                         + SmbHttpServer.URI_PREFIX + encodedPath;

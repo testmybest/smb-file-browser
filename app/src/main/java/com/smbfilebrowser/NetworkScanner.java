@@ -16,6 +16,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import jcifs.CIFSContext;
+import jcifs.config.PropertyConfiguration;
+import jcifs.context.BaseContext;
 import jcifs.smb.NtlmPasswordAuthenticator;
 import jcifs.smb.SmbFile;
 
@@ -27,12 +29,11 @@ import jcifs.smb.SmbFile;
 public class NetworkScanner {
     private static final String TAG = "NetworkScanner";
     private static final int SMB_PORT = 445;
-    private static final int CONNECT_TIMEOUT = 300; // 300ms 超时
+    private static final int CONNECT_TIMEOUT = 500; // 500ms 超时
     private static final int THREAD_POOL_SIZE = 50;
 
     private final Context context;
     private final WifiManager wifiManager;
-    private final CIFSContext smbContext;
     private ScanCallback callback;
     private ExecutorService executor;
     private volatile boolean scanning = false;
@@ -63,9 +64,8 @@ public class NetworkScanner {
         }
     }
 
-    public NetworkScanner(Context context, CIFSContext smbContext) {
+    public NetworkScanner(Context context) {
         this.context = context;
-        this.smbContext = smbContext;
         this.wifiManager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
     }
 
@@ -171,15 +171,17 @@ public class NetworkScanner {
      */
     private SmbServer probeSmbServer(String ip) {
         try {
-            CIFSContext ctx = smbContext.withCredentials(
+            // 创建独立的SMB context（不依赖外部连接）
+            java.util.Properties props = new java.util.Properties();
+            props.setProperty("jcifs.smb.client.responseTimeout", "2000");
+            props.setProperty("jcifs.smb.client.soTimeout", "2000");
+            PropertyConfiguration config = new PropertyConfiguration(props);
+            CIFSContext ctx = new BaseContext(config);
+            ctx = ctx.withCredentials(
                     new NtlmPasswordAuthenticator(null, "Guest", ""));
 
             String url = "smb://" + ip + "/";
             SmbFile file = new SmbFile(url, ctx);
-            
-            // 设置超时
-            file.setConnectTimeout(CONNECT_TIMEOUT * 1000);
-            file.setReadTimeout(CONNECT_TIMEOUT * 1000);
 
             // 尝试连接
             file.connect();

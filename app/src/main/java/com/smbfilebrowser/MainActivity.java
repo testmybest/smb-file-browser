@@ -54,7 +54,7 @@ public class MainActivity extends AppCompatActivity {
         lvScanResults = findViewById(R.id.lv_scan_results);
 
         smbManager = SMBManager.getInstance();
-        networkScanner = new NetworkScanner(this, smbManager.getBaseContext());
+        networkScanner = new NetworkScanner(this);
 
         // 扫描结果适配器
         scanAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, new ArrayList<>());

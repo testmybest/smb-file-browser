@@ -5,6 +5,8 @@ import android.util.Log;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +81,13 @@ public class SmbHttpServer extends NanoHTTPD {
 
         // 提取SMB路径：/stream/host/share/path -> host/share/path
         String smbPath = uri.substring(URI_PREFIX.length());
+        // URL解码（NanoHTTPD传过来的是编码过的）
+        try {
+            smbPath = URLDecoder.decode(smbPath, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            Log.w(TAG, "URL decode failed: " + e.getMessage());
+        }
+        Log.d(TAG, "SMB path: " + smbPath);
         return handleStream(smbPath, session.getHeaders());
     }
 
