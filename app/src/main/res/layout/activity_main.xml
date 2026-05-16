@@ -19,10 +19,62 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center_horizontal"
-        android:layout_marginBottom="32dp"
+        android:layout_marginBottom="24dp"
         android:text="访问Windows共享文件夹"
         android:textColor="#757575"
         android:textSize="14sp" />
+
+    <!-- 扫描按钮 -->
+    <Button
+        android:id="@+id/btn_scan"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:text="扫描网络"
+        android:textSize="14sp"
+        android:backgroundTint="#4CAF50" />
+
+    <!-- 扫描结果区域 -->
+    <LinearLayout
+        android:id="@+id/scan_layout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginTop="12dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tv_scan_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="正在扫描..."
+            android:textColor="#757575"
+            android:textSize="12sp"
+            android:gravity="center" />
+
+        <ListView
+            android:id="@+id/lv_scan_results"
+            android:layout_width="match_parent"
+            android:layout_height="150dp"
+            android:layout_marginTop="8dp"
+            android:background="#F5F5F5"
+            android:divider="#E0E0E0"
+            android:dividerHeight="1dp" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="16dp"
+        android:layout_marginBottom="16dp"
+        android:background="#E0E0E0" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="或手动输入连接信息："
+        android:textColor="#757575"
+        android:textSize="12sp"
+        android:layout_marginBottom="8dp" />
 
     <EditText
         android:id="@+id/et_host"

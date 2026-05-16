@@ -622,4 +622,30 @@ public class SMBManager {
         public long size;
         public long modified;
     }
+
+    // ========== Getter 方法 ==========
+    
+    public String getCurrentHost() {
+        return currentHost;
+    }
+
+    public String getCurrentShare() {
+        return currentShare;
+    }
+
+    public String getCurrentUsername() {
+        return currentUsername;
+    }
+
+    public String getCurrentPassword() {
+        return currentPassword;
+    }
+
+    public CIFSContext getBaseContext() {
+        return context;
+    }
+
+    public boolean isConnected() {
+        return connected;
+    }
 }
