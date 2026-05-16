@@ -4,7 +4,6 @@ import android.app.ProgressDialog;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Environment;
 import android.util.Log;
 import android.widget.Toast;
 
@@ -20,13 +19,6 @@ import jcifs.smb.SmbFileInputStream;
 
 /**
  * 视频播放器 - 下载到本地缓存后用系统播放器打开
- * 
- * 参考 SambaLite 的实现：
- * 1. 从 SMB 下载文件到本地缓存目录
- * 2. 使用 FileProvider 生成 content:// URI
- * 3. 调用系统播放器 (Intent.ACTION_VIEW) 播放
- * 
- * 优点：简单可靠，支持所有视频格式，不需要 HTTP 代理服务器
  */
 public class VideoPlayerActivity extends AppCompatActivity {
 
@@ -45,18 +37,26 @@ public class VideoPlayerActivity extends AppCompatActivity {
         remoteFilePath = getIntent().getStringExtra("file_path");
         fileName = getIntent().getStringExtra("file_name");
 
+        Log.d(TAG, "=== VideoPlayerActivity onCreate ===");
+        Log.d(TAG, "file_path: " + remoteFilePath);
+        Log.d(TAG, "file_name: " + fileName);
+
         if (remoteFilePath == null || remoteFilePath.isEmpty()) {
+            Log.e(TAG, "文件路径为空");
             Toast.makeText(this, "文件路径无效", Toast.LENGTH_SHORT).show();
             finish();
             return;
         }
 
-        Log.d(TAG, "Playing: " + remoteFilePath);
-        
         smbManager = SMBManager.getInstance();
         
         // 检查 SMB 连接
+        Log.d(TAG, "SMB connected: " + smbManager.isConnected());
+        Log.d(TAG, "SMB host: " + smbManager.getCurrentHost());
+        Log.d(TAG, "SMB share: " + smbManager.getCurrentShare());
+        
         if (!smbManager.isConnected()) {
+            Log.e(TAG, "SMB未连接");
             Toast.makeText(this, "未连接到 SMB 服务器", Toast.LENGTH_LONG).show();
             finish();
             return;
@@ -82,21 +82,41 @@ public class VideoPlayerActivity extends AppCompatActivity {
             File tempFile = null;
             try {
                 // 构建 SMB 路径
-                String smbUrl = "smb://" + smbManager.getCurrentHost() + "/" 
-                        + smbManager.getCurrentShare() + "/" + remoteFilePath;
+                String host = smbManager.getCurrentHost();
+                String share = smbManager.getCurrentShare();
+                
+                // 去掉路径末尾的斜杠
+                String cleanPath = remoteFilePath;
+                if (cleanPath.endsWith("/")) {
+                    cleanPath = cleanPath.substring(0, cleanPath.length() - 1);
+                }
+                
+                String smbUrl = "smb://" + host + "/" + share + "/" + cleanPath;
                 Log.d(TAG, "SMB URL: " + smbUrl);
 
                 // 打开 SMB 文件
                 SmbFile smbFile = new SmbFile(smbUrl, smbManager.getBaseContext());
+                
+                Log.d(TAG, "SMB file exists: " + smbFile.exists());
+                Log.d(TAG, "SMB file isFile: " + smbFile.isFile());
+                
+                if (!smbFile.exists()) {
+                    throw new Exception("文件不存在: " + smbUrl);
+                }
+                
                 long totalSize = smbFile.length();
-                Log.d(TAG, "File size: " + totalSize);
+                Log.d(TAG, "File size: " + totalSize + " bytes");
 
                 // 创建本地缓存文件
                 File cacheDir = new File(getCacheDir(), "video_cache");
                 if (!cacheDir.exists()) {
                     cacheDir.mkdirs();
                 }
-                tempFile = new File(cacheDir, fileName);
+                
+                // 使用时间戳避免文件名冲突
+                String safeFileName = System.currentTimeMillis() + "_" + fileName;
+                tempFile = new File(cacheDir, safeFileName);
+                Log.d(TAG, "Cache file: " + tempFile.getAbsolutePath());
 
                 // 下载文件
                 try (InputStream in = new SmbFileInputStream(smbFile);
@@ -110,7 +130,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
                         out.write(buffer, 0, read);
                         downloaded += read;
                         
-                        // 更新进度
+                        // 更新进度（每10%更新一次）
                         if (totalSize > 0) {
                             int progress = (int) (downloaded * 100 / totalSize);
                             runOnUiThread(() -> {
@@ -122,7 +142,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
                     }
                 }
 
-                Log.d(TAG, "Download complete: " + tempFile.getAbsolutePath());
+                Log.d(TAG, "Download complete: " + tempFile.length() + " bytes");
 
                 // 使用系统播放器打开
                 final File finalTempFile = tempFile;
@@ -162,27 +182,30 @@ public class VideoPlayerActivity extends AppCompatActivity {
             Log.d(TAG, "MIME type: " + mimeType);
 
             // 使用 FileProvider 获取 content:// URI
-            Uri contentUri = FileProvider.getUriForFile(
-                    this,
-                    getPackageName() + ".fileprovider",
-                    file);
+            String authority = getPackageName() + ".fileprovider";
+            Log.d(TAG, "FileProvider authority: " + authority);
+            
+            Uri contentUri = FileProvider.getUriForFile(this, authority, file);
+            Log.d(TAG, "Content URI: " + contentUri);
 
             // 创建播放 Intent
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(contentUri, mimeType);
             intent.addFlags(Intent.FLAG_GRANT_READ_PERMISSION);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
             // 启动播放器
             startActivity(intent);
+            Log.d(TAG, "Player started successfully");
             
-            // 关闭当前 Activity，让用户在系统播放器中观看
+            // 关闭当前 Activity
             finish();
 
         } catch (Exception e) {
             Log.e(TAG, "Open player failed: " + e.getMessage(), e);
             Toast.makeText(this, "无法打开播放器: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            file.delete();
+            if (file.exists()) {
+                file.delete();
+            }
             finish();
         }
     }
@@ -191,6 +214,7 @@ public class VideoPlayerActivity extends AppCompatActivity {
      * 根据文件名获取 MIME 类型
      */
     private String getMimeType(String fileName) {
+        if (fileName == null) return "video/*";
         String lower = fileName.toLowerCase();
         if (lower.endsWith(".mp4")) return "video/mp4";
         if (lower.endsWith(".mkv")) return "video/x-matroska";

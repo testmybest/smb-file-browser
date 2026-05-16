@@ -276,9 +276,14 @@ public class SMBManager {
                 if (file.getName().startsWith(".")) continue;
 
                 FileItem item = new FileItem();
-                item.name = file.getName().replace("/", "");
+                String name = file.getName();
+                // 去掉末尾的斜杠
+                if (name.endsWith("/")) {
+                    name = name.substring(0, name.length() - 1);
+                }
+                item.name = name;
                 item.path = (path == null || path.isEmpty()) ?
-                    file.getName() : path + "/" + file.getName();
+                    name : path + "/" + name;
                 item.isDirectory = file.isDirectory();
                 item.size = file.length();
                 item.modified = file.getLastModified();
