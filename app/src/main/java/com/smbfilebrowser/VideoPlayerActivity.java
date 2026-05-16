@@ -2,50 +2,39 @@ package com.smbfilebrowser;
 
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
+import android.util.Log;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
-import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.ui.PlayerView;
 
-import java.io.File;
-import java.util.Locale;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 
 /**
- * 视频/音频播放器页面 - 支持流式播放
- *
- * 工作流程：
- * 1. 接收 SMB 文件路径
- * 2. 后台开始流式下载到缓存
- * 3. 缓冲足够数据后（~2MB）开始播放
- * 4. 后台继续下载，播放器读取不断增长的本地文件
+ * 视频/音频播放器 - 通过本地HTTP代理实现秒开
  */
 public class VideoPlayerActivity extends AppCompatActivity {
+
+    private static final String TAG = "VideoPlayer";
 
     private PlayerView playerView;
     private LinearLayout loadingOverlay;
     private ProgressBar progressBar;
     private TextView tvLoadingStatus;
-    private TextView tvLoadingDetail;
     private ExoPlayer player;
     private SMBManager smbManager;
-    private Handler handler = new Handler(Looper.getMainLooper());
 
     private String remoteFilePath;
-    private String localCachePath;
-    private boolean playerStarted = false;
-    private boolean isAudio = false;
+    private String fileName;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -56,13 +45,11 @@ public class VideoPlayerActivity extends AppCompatActivity {
         loadingOverlay = findViewById(R.id.loading_overlay);
         progressBar = findViewById(R.id.progress_bar);
         tvLoadingStatus = findViewById(R.id.tv_loading_status);
-        tvLoadingDetail = findViewById(R.id.tv_loading_detail);
 
         smbManager = SMBManager.getInstance();
 
         remoteFilePath = getIntent().getStringExtra("file_path");
-        String fileName = getIntent().getStringExtra("file_name");
-        isAudio = getIntent().getBooleanExtra("is_audio", false);
+        fileName = getIntent().getStringExtra("file_name");
 
         if (getSupportActionBar() != null) {
             getSupportActionBar().setTitle(fileName);
@@ -75,107 +62,94 @@ public class VideoPlayerActivity extends AppCompatActivity {
             return;
         }
 
-        // 开始流式下载
-        startStreaming();
+        Log.d(TAG, "Playing: " + remoteFilePath);
+        startHttpProxyPlayback();
     }
 
     /**
-     * 开始流式下载并播放
+     * 通过本地HTTP代理播放（秒开）
      */
-    private void startStreaming() {
+    private void startHttpProxyPlayback() {
         loadingOverlay.setVisibility(View.VISIBLE);
-        tvLoadingStatus.setText("正在缓冲...");
+        tvLoadingStatus.setText("正在启动播放服务...");
 
-        smbManager.streamFile(remoteFilePath, this, new SMBManager.StreamListener() {
-            @Override
-            public void onReady(String localPath, long totalSize) {
-                localCachePath = localPath;
-                // 在主线程开始播放
-                handler.post(() -> startPlayback(localPath));
-            }
+        new Thread(() -> {
+            try {
+                // 启动HTTP代理服务器
+                SmbHttpServer server = SmbHttpServer.getInstance(smbManager.getBaseContext());
+                server.startServer();
+                Log.d(TAG, "HTTP server is running");
 
-            @Override
-            public void onProgress(int percent, long downloaded, long total, long speed) {
-                handler.post(() -> {
-                    if (!playerStarted) {
-                        tvLoadingStatus.setText("缓冲中 " + percent + "%");
-                        tvLoadingDetail.setText(formatSize(downloaded) + " / " + formatSize(total)
-                                + "  " + formatSize(speed) + "/s");
-                    }
-                    // 播放中也在标题显示下载进度
-                    if (playerStarted && getSupportActionBar() != null) {
-                        getSupportActionBar().setSubtitle("缓存 " + percent + "%");
-                    }
+                // 构建SMB流路径: host/share/path/to/file.mp4
+                String streamPath = smbManager.getCurrentHost() + "/"
+                        + smbManager.getCurrentShare() + "/"
+                        + remoteFilePath;
+
+                Log.d(TAG, "Stream path: " + streamPath);
+
+                // 对路径中的每一部分分别编码（处理中文、空格等），保留斜杠
+                String[] parts = streamPath.split("/");
+                StringBuilder encodedPath = new StringBuilder();
+                for (int i = 0; i < parts.length; i++) {
+                    if (i > 0) encodedPath.append("/");
+                    encodedPath.append(URLEncoder.encode(parts[i], StandardCharsets.UTF_8.toString()));
+                }
+
+                String httpUrl = "http://127.0.0.1:" + SmbHttpServer.PORT
+                        + SmbHttpServer.URI_PREFIX + encodedPath;
+
+                Log.d(TAG, "HTTP URL: " + httpUrl);
+
+                runOnUiThread(() -> {
+                    tvLoadingStatus.setText("正在播放...");
+                    startPlayer(httpUrl);
                 });
-            }
 
-            @Override
-            public void onComplete(String localPath) {
-                handler.post(() -> {
-                    if (getSupportActionBar() != null) {
-                        getSupportActionBar().setSubtitle("缓存完成");
-                    }
-                });
-            }
-
-            @Override
-            public void onFailed(String error) {
-                handler.post(() -> {
+            } catch (Exception e) {
+                Log.e(TAG, "HTTP proxy failed: " + e.getMessage(), e);
+                runOnUiThread(() -> {
                     loadingOverlay.setVisibility(View.GONE);
-                    Toast.makeText(VideoPlayerActivity.this,
-                            "加载失败: " + error, Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "播放失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
             }
-        });
+        }).start();
     }
 
-    /**
-     * 开始播放本地缓存文件
-     */
-    @OptIn(markerClass = UnstableApi.class)
-    private void startPlayback(String localPath) {
+    private void startPlayer(String httpUrl) {
         try {
-            File file = new File(localPath);
-            if (!file.exists()) {
-                Toast.makeText(this, "缓存文件不存在", Toast.LENGTH_SHORT).show();
-                return;
-            }
-
             player = new ExoPlayer.Builder(this).build();
             playerView.setPlayer(player);
 
-            Uri uri = Uri.fromFile(file);
-            MediaItem mediaItem = new MediaItem.fromUri(uri);
+            MediaItem mediaItem = MediaItem.fromUri(Uri.parse(httpUrl));
             player.setMediaItem(mediaItem);
             player.prepare();
-            player.playWhenReady = true;
+            player.setPlayWhenReady(true);
 
             player.addListener(new Player.Listener() {
                 @Override
                 public void onPlaybackStateChanged(int playbackState) {
+                    Log.d(TAG, "State: " + playbackState);
                     if (playbackState == Player.STATE_READY) {
-                        // 播放器准备好了，隐藏加载遮罩
                         loadingOverlay.setVisibility(View.GONE);
-                        playerStarted = true;
-                    } else if (playbackState == Player.STATE_BUFFERING) {
-                        // 如果是短暂的缓冲，不显示全屏遮罩
-                        // ExoPlayer 自身有缓冲指示器
+                        Log.d(TAG, "Playback started!");
                     } else if (playbackState == Player.STATE_ENDED) {
-                        // 播放结束
                         finish();
                     }
                 }
 
                 @Override
                 public void onPlayerError(PlaybackException error) {
+                    Log.e(TAG, "Error: " + error.getMessage(), error);
+                    loadingOverlay.setVisibility(View.GONE);
                     Toast.makeText(VideoPlayerActivity.this,
                             "播放出错: " + error.getMessage(), Toast.LENGTH_LONG).show();
                 }
             });
 
         } catch (Exception e) {
-            Toast.makeText(this, "播放失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Log.e(TAG, "startPlayer error: " + e.getMessage(), e);
             loadingOverlay.setVisibility(View.GONE);
+            Toast.makeText(this, "播放失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -200,14 +174,5 @@ public class VideoPlayerActivity extends AppCompatActivity {
             player.release();
             player = null;
         }
-        handler.removeCallbacksAndMessages(null);
-    }
-
-    private String formatSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format(Locale.getDefault(), "%.1f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024)
-            return String.format(Locale.getDefault(), "%.1f MB", bytes / (1024.0 * 1024));
-        return String.format(Locale.getDefault(), "%.1f GB", bytes / (1024.0 * 1024 * 1024));
     }
 }
