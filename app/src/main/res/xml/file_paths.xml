@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 缓存目录 -->
+    <cache-path name="cache" path="." />
+    <!-- 视频缓存目录 -->
+    <cache-path name="video_cache" path="video_cache/" />
+    <!-- 文件缓存目录 -->
+    <external-cache-path name="external_cache" path="." />
+</paths>
