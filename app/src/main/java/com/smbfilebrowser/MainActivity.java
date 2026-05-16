@@ -12,6 +12,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.util.ArrayList;
@@ -61,17 +62,48 @@ public class MainActivity extends AppCompatActivity {
         btnConnect.setOnClickListener(v -> connect());
         btnScan.setOnClickListener(v -> startScan());
 
+        // 点击扫描结果 - 显示该服务器的所有共享文件夹供选择
         lvScanResults.setOnItemClickListener((parent, view, position, id) -> {
             if (position < scannedServers.size()) {
                 NetworkScanner.SmbServer server = scannedServers.get(position);
-                etHost.setText(server.ip);
-                if (!server.shares.isEmpty()) {
-                    etShare.setText(server.shares.get(0));
-                }
-                scanLayout.setVisibility(View.GONE);
-                Toast.makeText(this, "已选择: " + server, Toast.LENGTH_SHORT).show();
+                showShareSelectionDialog(server);
             }
         });
+    }
+
+    /**
+     * 显示共享文件夹选择对话框
+     */
+    private void showShareSelectionDialog(NetworkScanner.SmbServer server) {
+        if (server.shares.isEmpty()) {
+            Toast.makeText(this, "该服务器没有可访问的共享文件夹", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // 如果有多个共享，显示选择对话框
+        if (server.shares.size() > 1) {
+            AlertDialog.Builder builder = new AlertDialog.Builder(this);
+            builder.setTitle(server.toString() + "\n选择共享文件夹:");
+            
+            String[] sharesArray = server.shares.toArray(new String[0]);
+            builder.setItems(sharesArray, (dialog, which) -> {
+                String selectedShare = server.shares.get(which);
+                etHost.setText(server.ip);
+                etShare.setText(selectedShare);
+                scanLayout.setVisibility(View.GONE);
+                Toast.makeText(this, "已选择: " + server.ip + "/" + selectedShare, Toast.LENGTH_SHORT).show();
+            });
+            
+            builder.setNegativeButton("取消", null);
+            builder.show();
+        } else {
+            // 只有一个共享，直接填入
+            String selectedShare = server.shares.get(0);
+            etHost.setText(server.ip);
+            etShare.setText(selectedShare);
+            scanLayout.setVisibility(View.GONE);
+            Toast.makeText(this, "已选择: " + server.ip + "/" + selectedShare, Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void connect() {
@@ -141,9 +173,10 @@ public class MainActivity extends AppCompatActivity {
             public void onServerFound(NetworkScanner.SmbServer server) {
                 runOnUiThread(() -> {
                     scannedServers.add(server);
+                    // 显示服务器和共享数量
                     String displayText = server.toString();
                     if (!server.shares.isEmpty()) {
-                        displayText += " [" + String.join(", ", server.shares) + "]";
+                        displayText += " [" + server.shares.size() + "个共享]";
                     }
                     scanAdapter.add(displayText);
                     tvScanStatus.setText("已发现 " + scannedServers.size() + " 个服务器");
